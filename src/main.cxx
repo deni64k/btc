@@ -7,10 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <condition_variable>
 #include <deque>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mutex>
+#include <queue>
 #include <random>
 #include <set>
 #include <sstream>
@@ -33,10 +36,13 @@
 #include <openssl/sha.h>
 #include <picosha2/picosha2.h>
 
-#include "logging.hxx"
+#include "common/logging.hxx"
+#include "common/types.hxx"
+#include "hasher.hxx"
+#include "opencl.hxx"
+#include "proto/script.hxx"
 #include "serdes.hxx"
 #include "utility.hxx"
-#include "proto/script.hxx"
 
 static_assert(__cpp_concepts >= 201500, "Compile with -fconcepts");
 static_assert(__cplusplus >= 201500, "C++17 at least required");
@@ -60,9 +66,6 @@ struct be_uint16_t {
 };
 
 using var_str = std::string;
-
-using hash_t = std::array<std::uint8_t, 32>;
-using addr_t = std::array<std::uint8_t, 16>;
 
 struct hash_t_key {
   std::size_t operator () (hash_t const& h) const noexcept {
@@ -782,74 +785,6 @@ addr_t make_addr4(char const* addr) {
           octs[0], octs[1], octs[2], octs[3]};
 }
 
-std::string addr_to_s(addr_t addr) {
-  bool is_ipv6 = false;
-  for (int i = 0; i < 10; ++i) {
-    if (addr[i]) {
-      is_ipv6 = true;
-      break;
-    }
-  }
-  if (!is_ipv6 && addr[10] != 0xff && addr[11] != 0xff)
-    is_ipv6 = true;
-
-  char buf[128];
-  if (is_ipv6) {
-    std::snprintf(buf, sizeof(buf), "%4hx:%04hx:%04hx:%04hx:%04hx:%04hx:%04hx:%04hx",
-                  std::uint16_t{addr[0]}  << 8 | addr[1],  std::uint16_t{addr[2]}  << 8 | addr[3],
-                  std::uint16_t{addr[4]}  << 8 | addr[5],  std::uint16_t{addr[6]}  << 8 | addr[7],
-                  std::uint16_t{addr[8]}  << 8 | addr[9],  std::uint16_t{addr[10]} << 8 | addr[11],
-                  std::uint16_t{addr[12]} << 8 | addr[13], std::uint16_t{addr[14]} << 8 | addr[15]);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%d.%d.%d.%d",
-                  int{addr[12]}, int{addr[13]}, int{addr[14]}, int{addr[15]});
-  }
-  return {buf};
-}
-
-std::string hash_to_s(hash_t const& hash) {
-  char buf[128] = {'\0'};
-  for (std::size_t i = 0; i < hash.size(); ++i) {
-    unsigned char b = hash[hash.size() - i - 1];
-    std::snprintf(buf + i*2, sizeof(buf) - i*2, "%02hhx", b);
-  }
-  return {buf};
-}
-
-std::string target_to_s(std::uint32_t bits) {
-  std::string buf = "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-  unsigned int val = bits & 0x00ffffffU;
-  int exp = (bits >> 24) - 3;
-  int off = buf.size() - exp*2 - 6;
-  std::snprintf(buf.data() + off, 7, "%06x", val);
-  for (int i = 0; i < off; ++i) {
-    buf[i] = '0';
-  }
-  for (unsigned i = off+6; i < buf.size(); ++i) {
-    buf[i] = 'f';
-  }
-  return std::move(buf);
-}
-
-auto vectorize_hash(hash_t const& hash) {
-  std::array<std::uint64_t, 4> vec = {0, 0, 0, 0};
-  for (unsigned i = 0; i < vec.size(); ++i) {
-    for (int j = i*8, k = 64-8; k >= 0; ++j, k -= 8) {
-      unsigned char b = hash[hash.size() - j - 1];
-      vec[i] |= std::uint64_t{b} << k;
-    }
-  }
-  return std::move(vec);
-}
-
-auto vectorize_target(std::uint32_t bits) {
-  auto target = target_to_s(bits);
-  std::array<std::uint64_t, 4> vec = {0, 0, 0, 0};
-  std::sscanf(target.c_str(), "%016llx%016llx%016llx%016llx",
-              &vec[0], &vec[1], &vec[2], &vec[3]);
-  return std::move(vec);
-}
-
 // From libbitcoin which is under AGPL
 std::vector<std::size_t> block_locator_indexes(std::size_t top_height) {
   std::vector<std::size_t> indexes;
@@ -875,6 +810,8 @@ std::vector<std::size_t> block_locator_indexes(std::size_t top_height) {
   // indexes.push_back(0);
   return indexes;
 }
+
+static std::unique_ptr<opencl::context> g_ctx;
 
 struct db_t {
   struct block_headers_page_t {
@@ -965,7 +902,23 @@ proto::tx reward_tx(std::uint64_t satoshis) {
 }
 
 struct miner_state {
-  
+  enum miner_command {
+    RESTART,
+    MEMPOOL_TX
+  };
+  std::condition_variable   queue_cond;
+  std::mutex                queue_mtx;
+  std::queue<miner_command> queue;
+
+  std::vector<hash_t> mining_txs;
+
+  void restart() {
+  }
+
+  template <Iterable T>
+  void mempool_tx(T&& cont) {
+    
+  }
 };
 
 struct node_t {
@@ -1062,7 +1015,7 @@ struct node_t {
         0
       };
       proto::header hdr = make_header("version", payload);
-      INFO() << " ==> version";
+      INFO() << " <== version";
 
       to_socket(sock_fd, hdr);
       to_socket(sock_fd, payload);
@@ -1071,7 +1024,7 @@ struct node_t {
     for (;;) {
       proto::header hdr;
       from_socket(sock_fd, hdr);
-      // INFO() << addr << " <==  " << hdr.command.data();
+      // INFO() << addr << " ==>  " << hdr.command.data();
       // INFO() << hdr;
 
       if (::strncmp(&hdr.command.front(), "version", hdr.command.size()) == 0) {
@@ -1104,7 +1057,13 @@ struct node_t {
 
       switch (state) {
       case STATE_TX_REQUESTING:
-        INFO() << " ==> mempool";
+        // XXX: Non-mempool mining
+        // to_socket(sock_fd, make_header("ping"));
+        // to_socket(sock_fd, proto::ping{gen_nonce()});
+        // state = STATE_MINING;
+        // break;
+
+        INFO() << " <== mempool";
         to_socket(sock_fd, make_header("mempool"));
 
         state = STATE_MEMPOOL_REQUESTING;
@@ -1122,7 +1081,7 @@ struct node_t {
               fee_transactions.insert(t.previous_output.hash);
             }
           }
-          INFO() << addr << " ==> getdata (" << fee_transactions.size() << " fee txs)";
+          INFO() << addr << " <== getdata (" << fee_transactions.size() << " fee txs)";
           to_socket(sock_fd, make_header("getdata", getdata));
           to_socket(sock_fd, getdata);
 
@@ -1157,18 +1116,13 @@ struct node_t {
 
           auto total_value = tx.total_value();
           auto fee = prev_value - total_value;
-          // INFO() << "mempool tx " << hash_to_s(hash)
+          // INFO() << "mempool tx " << to_string(hash)
           //        << "\thas fee " << prev_value << '-' << total_value << '=' << fee;
           mining_txs.emplace_back(hash, fee);
         }
-        std::sort(mining_txs.begin(), mining_txs.end(), [](auto const& lhs, auto const& rhs) {
-          return lhs.second > rhs.second;
-        });
-        if (mining_txs.size() > 512)
-          mining_txs.resize(512);
-        std::random_device rd;
-        std::mt19937 g(rd());
-        std::shuffle(mining_txs.begin(), mining_txs.end(), g);
+        // std::sort(mining_txs.begin(), mining_txs.end(), [](auto const& lhs, auto const& rhs) {
+        //   return lhs.second > rhs.second;
+        // });
         std::uint64_t total_fee = std::accumulate(
             mining_txs.cbegin(), mining_txs.cend(), 0,
             [](auto state, auto const& x) {
@@ -1183,10 +1137,15 @@ struct node_t {
         db.load_block(last_height, last_block);
 
         state = STATE_END;
-        auto mine = [last_height, last_block, mining_txs, total_fee](
+        auto target_hash = target_to_hash32(last_block.bits);
+        auto mine = [last_height, last_block, mining_txs, total_fee, target_hash](
+            sha256_program& hasher_prog,
             std::uint32_t const nonce_begin,
             std::uint32_t const nonce_end) mutable {
-          auto target = vectorize_target(last_block.bits);
+          static std::random_device rd;
+          static std::mt19937 g(rd());
+
+          // auto target_hash = target_to_hash64(last_block.bits);
           auto tx = reward_tx(reward(last_height) + total_fee);
           std::vector<hash_t> txs;
           txs.push_back(compute_hash(tx));
@@ -1194,8 +1153,9 @@ struct node_t {
                          [](auto const &x) {
                            return x.first;
                          });
+          std::shuffle(txs.begin(), txs.end(), g);
           auto merkle_root = merkle_tree(txs);
-          
+
           proto::block_headers block = {
             proto::VERSION,
             last_block.hash(),
@@ -1210,7 +1170,7 @@ struct node_t {
           // block.merkle_root = {
           //   0xe1, 0x1c, 0x48, 0xfe, 0xcd, 0xd9, 0xe7, 0x25, 0x10, 0xca, 0x84, 0xf0, 0x23, 0x37, 0x0c, 0x9a,
           //   0x38, 0xbf, 0x91, 0xac, 0x5c, 0xae, 0x88, 0x01, 0x9b, 0xee, 0x94, 0xd2, 0x45, 0x28, 0x52, 0x63};
-          // Should give nonce=2011431709
+          // Should give nonce=2011431709 0x77e4031d
           //
           std::ostringstream os;
           ostream_ops ops(os);
@@ -1225,82 +1185,76 @@ struct node_t {
 
           using namespace std::chrono_literals;
           std::this_thread::sleep_for(1s);
-          // INFO() << "Target: " << target_to_s(block.bits);
-          // INFO() << "Mining with block:\n" << block;
+          INFO() << "target: " << prettify_hash(target_to_s(block.bits));
+          INFO() << "mining with block:\n" << block;
 
-          std::uint32_t& nonce = *reinterpret_cast<std::uint32_t*>(&buf.back() + 1 - sizeof(std::uint32_t));
-          decltype(target) min_hash = {~0ull, ~0ull, ~0ull, ~0ull};
-          hash_t hash0, hash1;
-          SHA256_CTX hash0ctx, hash1ctx;
-          for (nonce = nonce_begin; ; ++nonce) {
-            {
-              SHA256_Init(&hash0ctx);
-              SHA256_Update(&hash0ctx, buf.data(), buf.size());
-              SHA256_Final(hash0.data(), &hash0ctx);
+          // auto min_hash = hasher_prog(target_hash, buf, nonce_begin, nonce_end);
+          auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, nonce_begin, nonce_end);
 
-              SHA256_Init(&hash1ctx);
-              SHA256_Update(&hash1ctx, hash0.data(), hash0.size());
-              SHA256_Final(hash1.data(), &hash1ctx);
+          INFO() << "\tmin_hash: " << prettify_hash(to_string(min_hash));
+          INFO() << "\tmin_nonce: " << min_nonce;
 
-              // picosha2::hash256(buf.cbegin(), buf.cend(), hash0.begin(), hash0.end());
-              // picosha2::hash256(hash0.cbegin(), hash0.cend(), hash1.begin(), hash1.end());
-            }
-            
-            auto hash = vectorize_hash(hash1);
-            if (hash < target) {
-              INFO() << "Solved!\n"
-                     << "\thash: " << hash_to_s(hash1) << ' '
-                     << " nonce=\t" << nonce
-                     << '\n' << block;
-              exit(0);
-              break;
-            } else {
-              min_hash = std::min(min_hash, hash);
-              if (nonce % 50000000 == 0) {
-                INFO() << "Not yet! min_hash: "
-                       << std::hex
-                       << std::setfill('0') << std::setw(16) << min_hash[0] << ' '
-                       << std::setfill('0') << std::setw(16) << min_hash[1] << ' '
-                       << std::setfill('0') << std::setw(16) << min_hash[2] << ' '
-                       << std::setfill('0') << std::setw(16) << min_hash[3] << ' '
-                       << std::dec
-                       << " nonce: " << std::setfill(' ') << std::setw(12) << std::right << nonce
-                       << ' ' << (double(nonce - nonce_begin) / double((nonce_end - nonce_begin) + 1));
-              }
-            }
-
-            if (nonce == nonce_end)
-              break;
+          if (to_string(min_hash) < target_to_s(block.bits)) {
+            INFO() << "Found!";
+            exit(0);
           }
-          INFO() << "Miner done.";
+          // std::uint32_t& nonce = *reinterpret_cast<std::uint32_t*>(&buf.back() + 1 - sizeof(std::uint32_t));
+          // decltype(target) min_hash = {~0ull, ~0ull, ~0ull, ~0ull};
+          // hash_t hash0, hash1;
+          // SHA256_CTX hash0ctx, hash1ctx;
+          // for (nonce = nonce_begin; ; ++nonce) {
+          //   {
+          //     SHA256_Init(&hash0ctx);
+          //     SHA256_Update(&hash0ctx, buf.data(), buf.size());
+          //     SHA256_Final(hash0.data(), &hash0ctx);
+
+          //     SHA256_Init(&hash1ctx);
+          //     SHA256_Update(&hash1ctx, hash0.data(), hash0.size());
+          //     SHA256_Final(hash1.data(), &hash1ctx);
+
+          //     // picosha2::hash256(buf.cbegin(), buf.cend(), hash0.begin(), hash0.end());
+          //     // picosha2::hash256(hash0.cbegin(), hash0.cend(), hash1.begin(), hash1.end());
+          //   }
+            
+          //   auto hash = vectorize_hash(hash1);
+          //   if (hash < target) {
+          //     INFO() << "Solved!\n"
+          //            << "\thash: " << to_string(hash1) << ' '
+          //            << " nonce=\t" << nonce
+          //            << '\n' << block;
+          //     exit(0);
+          //     break;
+          //   } else {
+          //     min_hash = std::min(min_hash, hash);
+          //     if (nonce % 50000000 == 0) {
+          //       INFO() << "Not yet! min_hash: "
+          //              << std::hex
+          //              << std::setfill('0') << std::setw(16) << min_hash[0] << ' '
+          //              << std::setfill('0') << std::setw(16) << min_hash[1] << ' '
+          //              << std::setfill('0') << std::setw(16) << min_hash[2] << ' '
+          //              << std::setfill('0') << std::setw(16) << min_hash[3] << ' '
+          //              << std::dec
+          //              << " nonce: " << std::setfill(' ') << std::setw(12) << std::right << nonce
+          //              << ' ' << (double(nonce - nonce_begin) / double((nonce_end - nonce_begin) + 1));
+          //     }
+          //   }
+
+          //   if (nonce == nonce_end)
+          //     break;
+          // }
+          INFO() << "miner done";
         };
 
-        std::vector<std::thread> thrs;
-        unsigned n_workers = 8;
-        std::uint32_t nonce_step = std::numeric_limits<std::uint32_t>::max() / n_workers;
-        unsigned i = 0;
-        for (; i < n_workers-1; ++i) {
-          auto const nonce_begin = nonce_step*i;
-          auto const nonce_end   = nonce_begin + (nonce_step-1);
-          INFO() << std::hex << "Run miner [" << nonce_begin << ", " << nonce_end << ']' << std::dec;
-          std::thread miner_thread(mine, nonce_begin, nonce_end);
-          thrs.push_back(std::move(miner_thread));
-        }
-        {
-          auto const nonce_begin = nonce_step*i;
-          auto const nonce_end   = std::numeric_limits<std::uint32_t>::max();
-          INFO() << std::hex << "Run miner [" << nonce_begin << ", " << nonce_end << ']' << std::dec;
-          std::thread miner_thread(mine, nonce_begin, nonce_end);
-          thrs.push_back(std::move(miner_thread));
-        }
-
-        std::thread supervisor([thrs = std::move(thrs)]() mutable {
-          for (auto& thr : thrs) {
-            thr.join();
+        std::thread miner_thr([mine]() mutable {
+          sha256_program hasher_prog(*g_ctx);
+          while (1) {
+            mine(hasher_prog,
+                 std::numeric_limits<std::uint32_t>::min(),
+                 std::numeric_limits<std::uint32_t>::max());
           }
-          exit(2);
         });
-        supervisor.detach();
+
+        miner_thr.detach();
         
         break;
       }
@@ -1313,7 +1267,7 @@ struct node_t {
           proto::getdata pld = {
             {{proto::inv_vect::MSG_BLOCK, hdrs.prev_block}}
           };
-          INFO() << " ==> getdata (" << hash_to_s(hdrs.prev_block) << ')';
+          INFO() << " <== getdata (" << to_string(hdrs.prev_block) << ')';
           to_socket(sock_fd, make_header("getdata", pld));
           to_socket(sock_fd, pld);
 
@@ -1329,13 +1283,13 @@ struct node_t {
 
   void send_sendcmpct() {
     proto::sendcmpct payload{0, 1};
-    INFO() << addr << " ==> sendcmpct";
+    INFO() << addr << " <== sendcmpct";
     to_socket(sock_fd, make_header("sendcmpct", payload));
     to_socket(sock_fd, payload);
   }
 
   void send_getaddr() {
-    INFO() << addr << " ==> getaddr";
+    INFO() << addr << " <== getaddr";
     to_socket(sock_fd, make_header("getaddr"));
   }
 
@@ -1353,7 +1307,7 @@ struct node_t {
     proto::getheaders payload = {
       current_version, hashes, {}
     };
-    INFO() << addr << " ==> getheaders";
+    INFO() << addr << " <== getheaders";
     to_socket(sock_fd, make_header("getheaders", payload));
     to_socket(sock_fd, payload);
   };
@@ -1382,7 +1336,7 @@ struct node_t {
 
   void handle_sendheaders(proto::header const&) {
     proto::headers payload;
-    INFO() << addr << " ==> headers";
+    INFO() << addr << " <== headers";
     to_socket(sock_fd, make_header("headers", payload));
     to_socket(sock_fd, payload);
   }
@@ -1396,16 +1350,16 @@ struct node_t {
       INFO() << "\tBlocks (" << payload.headers.size() << "):";
       INFO() << "\t\t"
              << e.version << ' '
-             << hash_to_s(e.prev_block) << ' '
-             << hash_to_s(e.merkle_root) << ' '
+             << "prev=" << to_string(e.prev_block) << ' '
+             << "root=" << to_string(e.merkle_root) << ' '
              << e.timestamp << ' '
              << std::hex << e.bits << std::dec << ' '
              << e.nonce << ' '
              << e.txn_count;
       INFO() << "\t\t"
-             << target_to_s(e.bits);
+             << prettify_hash(target_to_s(e.bits));
       INFO() << "\t\t"
-             << hash_to_s(e.hash());
+             << "hash=" << prettify_hash(to_string(e.hash()));
     }
 
     auto height = db.last_height();
@@ -1466,7 +1420,7 @@ struct node_t {
     for (auto&& e : payload.txs) {
       if (e.tx_witnesses.empty())
         continue;
-      INFO() << "\ttx:     " << hash_to_s(compute_hash(e));
+      INFO() << "\ttx:     " << to_string(compute_hash(e));
       for (auto& t: e.txs_in)
         INFO() << "\ttx_in:  " << btc::proto::script{{t.signature_script}};
       for (auto& t: e.txs_out) {
@@ -1478,7 +1432,7 @@ struct node_t {
       if (!--limit)
         break;
     }
-    INFO() << "\t\tMerkle tree: " << hash_to_s(merkle_tree(payload.txs));
+    INFO() << "\t\tmerkle tree: " << prettify_hash(to_string(merkle_tree(payload.txs)));
   }
 
   void handle_inv(proto::header const&) {
@@ -1487,7 +1441,7 @@ struct node_t {
     INFO() << addr << ": [inv] " << payload.inventory.size() << " items";
     unsigned limit = 3;
     for (auto&& e : payload.inventory) {
-      INFO() << addr << ": [inv] \t" << e.type << ' ' << hash_to_s(e.hash);
+      INFO() << addr << ": [inv] \t" << e.type << ' ' << to_string(e.hash);
       if (!--limit)
         break;
     }
@@ -1502,7 +1456,7 @@ struct node_t {
           getdata.inventory.push_back(proto::inv_vect{i.type, i.hash});
           mempool_transactions.insert(i.hash);
         }
-        INFO() << addr << " ==> getdata (" << mempool_transactions.size() << " mempool txs)";
+        INFO() << addr << " <== getdata (" << mempool_transactions.size() << " mempool txs)";
         to_socket(sock_fd, make_header("getdata", getdata));
         to_socket(sock_fd, getdata);
 
@@ -1515,7 +1469,7 @@ struct node_t {
     //     for (auto&& i : payload.inventory) {
     //       getdata.emplace_back(i.type, i.hash);
     //     }
-    //     INFO() << " ==> getdata (" << getdata.inventory.size() << " items)";
+    //     INFO() << " <== getdata (" << getdata.inventory.size() << " items)";
     //     to_socket(sock_fd, make_header("getdata", getdata));
     //     to_socket(sock_fd, getdata);
 
@@ -1539,7 +1493,7 @@ struct node_t {
           continue;
         if (auto iter = mempool_transactions.find(i.hash);
             iter != mempool_transactions.end()) {
-          // WARN() << "mempool tx " << hash_to_s(i.hash) << " is not found";
+          // WARN() << "mempool tx " << to_string(i.hash) << " is not found";
           mempool_transactions.erase(iter);
         }
       }
@@ -1552,7 +1506,7 @@ struct node_t {
           continue;
         if (auto iter = fee_transactions.find(i.hash);
             iter != fee_transactions.end()) {
-          // WARN() << "fee tx " << hash_to_s(i.hash) << " is not found";
+          // WARN() << "fee tx " << to_string(i.hash) << " is not found";
           fee_transactions.erase(iter);
         }
       }
@@ -1606,17 +1560,61 @@ struct node_t {
   }
 };
 
+void usage(char const* progname) {
+  std::cerr << "Usage: " << progname << " <peer>\n";
+}
+
 int main(int argc, char* argv[]) {
-  if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <peer>\n";
+  char const* peer_addr = nullptr;
+  unsigned platform_id = 0;
+  unsigned device_id = 0;
+  int argc_i;
+  for (argc_i = 1; argc_i < argc; ++argc_i) {
+    if (strcmp(argv[argc_i], "--platform-id") == 0) {
+      platform_id = std::atoi(argv[++argc_i]);
+    } else if (strcmp(argv[argc_i], "--device-id") == 0) {
+      device_id = std::atoi(argv[++argc_i]);
+    } else if (strcmp(argv[argc_i], "--opencl-info") == 0) {
+      opencl::print_info(std::cerr);
+      return 0;
+    } else {
+      peer_addr = argv[argc_i];
+    }
+  }
+
+  if (0) {
+    opencl::context ctx;
+    hash32_t target_hash = {0x00000000, 0x00000000, 0x0031d97c, 0xffffffff,
+                            0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff};
+    std::fill(target_hash.begin(), target_hash.end(), 0x00);
+    ctx.init(platform_id, device_id);
+
+    sha256_program hasher_prog(ctx);
+    std::string msg = "The quick brown fox jumps over the lazy dog";
+    auto [min_hash, min_nonce] = hasher_prog(target_hash,
+                                             std::vector<std::uint8_t>(std::cbegin(msg), std::cend(msg)),
+                                             0, 0x0fffffff);
+    std::cerr << "[opencl] min_hash: " << to_string(min_hash);
+    std::cerr << "[opencl] min_nonce: " << min_nonce;
+    ctx.cleanup();
+    return 0;
+  }
+
+  if (!peer_addr) {
+    usage(argv[0]);
     return 1;
   }
 
   try {
     db_t db("block_headers.db");
-    node_t node{argv[1], db};
+    node_t node{peer_addr, db};
+
+    g_ctx = std::make_unique<opencl::context>();
+    g_ctx->init(platform_id, device_id);
 
     node.run();
+
+    g_ctx->cleanup();
 
   } catch (std::system_error const& err) {
     ERROR() << "Error occurred (" << err.code() << "): " << err.what();

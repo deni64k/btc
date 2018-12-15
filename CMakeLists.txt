@@ -10,10 +10,12 @@ set(CMAKE_CXX_FLAGS_RELEASE
 
 set(OPENSSL_USE_STATIC_LIBS ON)
 find_package(OpenSSL REQUIRED)
+find_package(OpenCL REQUIRED)
 
 include_directories(
         "/usr/local/include"
         "${OPENSSL_INCLUDE_DIR}"
+        "${OpenCL_INCLUDE_DIRS}"
         "${btc_SOURCE_DIR}/src"
         "${btc_SOURCE_DIR}/vendor")
 
