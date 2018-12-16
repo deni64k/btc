@@ -31,3 +31,18 @@ concept bool Iterable = requires(T&& o) {
   begin(std::forward<T>(o));
   end(std::forward<T>(o));
 };
+
+std::uint64_t gen_nonce() {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  static std::uniform_int_distribution<std::uint64_t> dis(0, UINT64_MAX);
+
+  return dis(gen);
+}
+
+template <typename ...Ts> std::tuple<Ts&...> make_tuple_refs(Ts&... ts) {
+  return {ts...};
+}
+template <typename ...Ts> std::tuple<Ts const&...> make_tuple_crefs(Ts const&... ts) {
+  return {ts...};
+}

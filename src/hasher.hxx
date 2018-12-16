@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/types.hxx"
+#include "common/profile.hxx"
 #include "opencl/opencl.hxx"
 
 struct sha256_program {
@@ -148,12 +149,16 @@ struct sha256_program {
                std::vector<std::uint8_t> const& message,
                std::uint32_t nonce_begin,
                std::uint32_t nonce_end) {
+    common::profile hashing_time;
+    common::profile iteration_time;
+    hashing_time.start();
+
     std::size_t const nonce_iterations = (nonce_end - nonce_begin + nonce_step - 1) / nonce_step;
     std::vector<std::uint32_t> nonce_begins;
     std::vector<std::uint32_t> nonce_ends;
     nonce_begins.reserve(nonce_iterations);
     nonce_ends.reserve(nonce_iterations);
-    
+
     std::uint32_t min_nonce;
     hash32_t min_hash;
     std::fill(min_hash.begin(), min_hash.end(), 0xffffffff);
@@ -180,12 +185,8 @@ struct sha256_program {
     rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_message_len_, CL_TRUE, 0,
                               sizeof(len), &len, 0, nullptr, nullptr);
 
-    struct timespec hashing_start, hashing_finish;
-    clock_gettime(CLOCK_REALTIME, &hashing_start);
-
     for (unsigned offset = 0; offset < nonce_iterations; ) {
-      struct timespec iteration_start, iteration_finish;
-      clock_gettime(CLOCK_REALTIME, &iteration_start);
+      iteration_time.start();
 
       unsigned rem = nonce_iterations - offset;
       unsigned batch_size = std::min<unsigned>(rem, max_batch_size);
@@ -225,20 +226,6 @@ struct sha256_program {
       if (rv != CL_SUCCESS)
         throw std::runtime_error("clEnqueueReadBuffer failed");
 
-      // std::for_each(min_hashes.begin(), min_hashes.end(),
-      //               [](auto& x) { std::reverse(x.begin(), x.end()); });
-      // for (auto& x : min_hashes) {
-      //   INFO() << "min_hashes: " << std::hex << std::setfill('0')
-      //          << std::setw(8) << x[0] << ' '
-      //          << std::setw(8) << x[1] << ' '
-      //          << std::setw(8) << x[2] << ' '
-      //          << std::setw(8) << x[3] << ' '
-      //          << std::setw(8) << x[4] << ' '
-      //          << std::setw(8) << x[5] << ' '
-      //          << std::setw(8) << x[6] << ' '
-      //          << std::setw(8) << x[7] << std::dec << std::setfill(' ');
-      //   // INFO() << "min_hashes: " << to_string(x);
-      // }
       auto iter = std::min_element(min_hashes.cbegin(), min_hashes.cend());
       hash32_t min_hash_local = *iter;
       if (min_hash_local < min_hash) {
@@ -246,43 +233,35 @@ struct sha256_program {
         min_nonce = min_nonces[std::distance(min_hashes.cbegin(), iter)];
       }
 
-      clock_gettime(CLOCK_REALTIME, &iteration_finish);
-      long iteration_sec = iteration_finish.tv_sec - iteration_start.tv_sec;
-      long iteration_nsec = iteration_finish.tv_nsec - iteration_start.tv_nsec;
-      if (iteration_start.tv_nsec > iteration_finish.tv_nsec) {
-        --iteration_sec;
-        iteration_nsec += 1000000000ULL;
-      }
-      double iteration_took = double(iteration_sec) + double(iteration_nsec) / 1e9;
-
       offset += batch_size;
-      if (1) {
-        auto min_hash_sofar = min_hash;
-        std::reverse(min_hash_sofar.begin(), min_hash_sofar.end());
-        INFO() << "min hash so far: " << prettify_hash(to_string(min_hash_sofar))
-               << std::fixed << std::setprecision(3)
-               << " took " << iteration_took << 's'
-               << ' ' << (float(offset) / float(nonce_iterations)) << ' '
-               << ((nonce_ends[offset + (batch_size - 1)] - nonce_begins[offset] + 1) / iteration_took / 1e6)
-               << "MiH/s";
-      }
+
+      iteration_time.finish();
+      double iteration_took = iteration_time.seconds();
+
+      auto min_hash_sofar = min_hash;
+      std::reverse(min_hash_sofar.begin(), min_hash_sofar.end());
+      INFO() << std::fixed << std::setprecision(3)
+             << "iteration took "
+             << iteration_took << 's'
+             << "\tmin hash so far: "
+             << prettify_hash(to_string(min_hash_sofar))
+             << "\tprogress: "
+             << (float(offset) / float(nonce_iterations))
+             << "\thashrate: "
+             << ((nonce_ends[offset + (batch_size - 1)] - nonce_begins[offset] + 1) / iteration_took / 1e6)
+             << "MiH/s";
+
+      if (compare_hashes(min_hash_sofar, target_hash) <= 0)
+        break;
     }
 
-    clock_gettime(CLOCK_REALTIME, &hashing_finish);
-    long hashing_sec = hashing_finish.tv_sec - hashing_start.tv_sec;
-    long hashing_nsec = hashing_finish.tv_nsec - hashing_start.tv_nsec;
-    if (hashing_start.tv_nsec > hashing_finish.tv_nsec) {
-      --hashing_sec;
-      hashing_nsec += 1000000000ULL;
-    }
-    double hashing_took = double(hashing_sec) + double(hashing_nsec) / 1e9;
+    hashing_time.finish();
+    double hashing_took = hashing_time.seconds();
 
-    INFO() << "took " << hashing_took << 's'
-           << " hashrate " << std::fixed << std::setprecision(3)
+    INFO() << "mining took " << hashing_took << 's'
+           << "\thashrate: " << std::fixed << std::setprecision(3)
            << ((nonce_end - nonce_begin) / hashing_took / 1e6) << " MiH/s";
     std::reverse(min_hash.begin(), min_hash.end());
-    // for (unsigned i = 0; i < 8; ++i)
-    //   min_hash[i] = htonl(min_hash[i]);
     
     return std::make_pair(std::move(min_hash), min_nonce);
   }

@@ -3,11 +3,58 @@
 #include <array>
 #include <cstdlib>
 
+#include "serdes.hxx"
+
 using hash_t   = std::array<std::uint8_t, 32>;
 using hash32_t = std::array<std::uint32_t, 8>;
 using hash64_t = std::array<std::uint64_t, 4>;
 
 using addr_t = std::array<std::uint8_t, 16>;
+
+struct var_int {
+  std::uint64_t num;
+  operator std::uint64_t () const { return num; }
+};
+
+struct be_uint16_t {
+  std::uint16_t num;
+  operator std::uint16_t () const { return num; }
+};
+
+using var_str = std::string;
+
+struct hash_t_key {
+  std::size_t operator () (hash_t const& h) const noexcept {
+    using sv_t = std::basic_string_view<char>;
+    return std::hash<sv_t>{}(sv_t{reinterpret_cast<char const*>(h.data()), h.size()});
+  }
+};
+
+struct net_addr {
+  // The Time (version >= 31402). Not present in version message.
+  std::uint32_t time;
+  // Same service(s) listed in version
+  std::uint64_t services;
+  // IPv6 address. Network byte order.
+  // (12 bytes 00 00 00 00 00 00 00 00 00 00 FF FF, followed by the 4 bytes of the IPv4 address).
+  addr_t addr;
+  // Port number, network byte order
+  be_uint16_t port;
+
+  SERDES(time, services, addr, port)
+};
+
+struct net_addr_version {
+  // Same service(s) listed in version
+  std::uint64_t services;
+  // IPv6 address. Network byte order.
+  // (12 bytes 00 00 00 00 00 00 00 00 00 00 FF FF, followed by the 4 bytes of the IPv4 address).
+  addr_t addr;
+  // Port number, network byte order
+  be_uint16_t port;
+
+  SERDES(services, addr, port)
+};
 
 namespace {
 
@@ -133,19 +180,35 @@ inline hash64_t vectorize_hash(hash_t const& hash) {
 
 inline hash64_t target_to_hash64(std::uint32_t bits) {
   auto target = target_to_s(bits);
+  INFO() << "target_to_hash64: target: " << target;
   hash64_t vec;
   std::sscanf(target.c_str(), "%016llx%016llx%016llx%016llx",
               &vec[0], &vec[1], &vec[2], &vec[3]);
+  for (auto& x : vec)
+    x = (std::uint64_t(ntohl(x & 0xffffffff)) << 32) | ntohl(x >> 32);
   return std::move(vec);
 }
 
 inline hash32_t target_to_hash32(std::uint32_t bits) {
   auto target = target_to_s(bits);
+  // INFO() << "target_to_hash32: target: " << target;
   hash32_t vec;
   std::sscanf(target.c_str(), "%08x%08x%08x%08x%08x%08x%08x%08x",
-              &vec[0], &vec[1], &vec[2], &vec[3],
-              &vec[4], &vec[5], &vec[6], &vec[7]);
+              &vec[7], &vec[6], &vec[5], &vec[4],
+              &vec[3], &vec[2], &vec[1], &vec[0]);
+  for (auto& x : vec)
+    x = ntohl(x);
   return std::move(vec);
+}
+
+int compare_hashes(hash32_t const& lhs, hash32_t const& rhs) {
+  for (int i = lhs.size() - 1; i >= 0; --i) {
+    if (lhs[i] < rhs[i])
+      return -1;
+    else if (lhs[i] > rhs[i])
+      return 1;
+  }
+  return 0;
 }
 
 }
