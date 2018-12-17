@@ -16,6 +16,16 @@
 #define H6 0x1f83d9ab
 #define H7 0x5be0cd19
 
+#define K_CONSTS                                                        \
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, \
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, \
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, \
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, \
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, \
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, \
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, \
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+
 uint htonl(uint x);
 
 uint rotr(uint x, uint n);
@@ -27,10 +37,16 @@ uint gamma0(uint x);
 uint gamma1(uint x);
 
 bool compare_hash(uint8 min_hash, uint8 hash);
+uint8 sha256_init(void);
 uint8 sha256_update(char* message, uint ulen, uint8 digest);
 uint8 sha256_finish_padded(char* message, uint ulen, uint orig_ulen, uint8 digest);
 uint8 sha256_finish(char* message, uint ulen, uint, uint8 digest);
-uint8 sha256_init(void);
+uint8 sha256_nonce_block(uint merkle_root,
+                         uint timestamp,
+                         uint target,
+                         uint nonce,
+                         uint8 digest);
+uint8 sha256_second_hash(uint8 digest);
 
 void flatten_hash(char* msg, uint bytes);
 
@@ -75,23 +91,13 @@ inline uint8 sha256_init(void) {
 }
 
 uint8 sha256_update(char* message, uint ulen, uint8 digest) {
-  uint K[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-  };
+  uint K[64] = { K_CONSTS };
 
   uint W[64];
   uint A, B, C, D, E, F, G, H, T1, T2;
   uint t, item, total;
 
   total = ulen / 64;
-  /* printf("sha256_update: ulen=%u total=%u\n", ulen, total); */
 
   for (item = 0; item < total; ++item) {
     A = digest.s0;
@@ -105,17 +111,10 @@ uint8 sha256_update(char* message, uint ulen, uint8 digest) {
 
 #pragma unroll
     for (t = 0; t < 16; ++t) {
-      W[t] = 0x00000000;
-    }
-
-#pragma unroll
-    for (t = 0; t < 16; ++t) {
-      W[t]  = (uchar)(*message) << 24; message++;
-      W[t] |= (uchar)(*message) << 16; message++;
-      W[t] |= (uchar)(*message) << 8;  message++;
-      W[t] |= (uchar)(*message) << 0;  message++;
-
-      /* printf("update: W[%u]: %08x\n", t, W[t]); */
+      W[t]  = (uchar)(*message) << 24; ++message;
+      W[t] |= (uchar)(*message) << 16; ++message;
+      W[t] |= (uchar)(*message) <<  8; ++message;
+      W[t] |= (uchar)(*message) <<  0; ++message;
     }
 
 #pragma unroll
@@ -135,34 +134,13 @@ uint8 sha256_update(char* message, uint ulen, uint8 digest) {
     }
 
     digest += (uint8)(A, B, C, D, E, F, G, H);
-
-    /* printf("sha256_update: item=%u, A=%08x\n", item, A); */
-
-    //  for (t = 0; t < 80; t++)
-    //    {
-    //    printf("W[%d]: %u\n",t,W[t]);
-    //    }
   }
 
-  /* digest = (uint8)(A, B, C, D, E, F, G, H); */
-
   return digest;
-  /* *digest_result = digest;
-   * 
-   * return total * 64; */
 }
 
 uint8 sha256_finish_padded(char* message, uint ulen, uint orig_ulen, uint8 digest) {
-  uint K[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-  };
+  uint K[64] = { K_CONSTS };
 
   uint W[64];
   uint A, B, C, D, E, F, G, H, T1, T2;
@@ -210,17 +188,123 @@ uint8 sha256_finish_padded(char* message, uint ulen, uint orig_ulen, uint8 diges
   return digest;
 }
 
+uint8 sha256_nonce_block(uint merkle_root,
+                         uint timestamp,
+                         uint target,
+                         uint nonce,
+                         uint8 digest) {
+  uint K[64] = { K_CONSTS };
+
+  uint W[64];
+  uint A, B, C, D, E, F, G, H, T1, T2;
+  uint t;
+
+  A = digest.s0;
+  B = digest.s1;
+  C = digest.s2;
+  D = digest.s3;
+  E = digest.s4;
+  F = digest.s5;
+  G = digest.s6;
+  H = digest.s7;
+
+  W[0] = merkle_root;
+  W[1] = timestamp;
+  W[2] = target;
+  W[3] = nonce;
+  W[4] = 0x80000000;
+#pragma unroll
+  for (t = 5; t < 15; ++t)
+    W[t] = 0;
+  W[15] = 80 * 8;
+
+#pragma unroll
+  for (t = 0; t < 64; ++t) {
+    if (t >= 16)
+      W[t] = gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16];
+    T1 = H + sigma1(E) + ch(E, F, G) + K[t] + W[t];
+    T2 = sigma0(A) + maj(A, B, C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+
+  return digest + (uint8)(A, B, C, D, E, F, G, H);
+}
+
+uint8 sha256_second_hash(uint8 digest) {
+  uint K[64] = { K_CONSTS };
+
+  uint W[64];
+  uint A, B, C, D, E, F, G, H, T1, T2;
+  uint t, ulen = 32;
+
+  W[0] = digest.s0;
+  W[1] = digest.s1;
+  W[2] = digest.s2;
+  W[3] = digest.s3;
+  W[4] = digest.s4;
+  W[5] = digest.s5;
+  W[6] = digest.s6;
+  W[7] = digest.s7;
+  W[8] = 0x80000000;
+#pragma unroll
+  for (t = 9; t < 15; ++t)
+    W[t] = 0;
+  W[15] = ulen * 8;
+
+  A = H0;
+  B = H1;
+  C = H2;
+  D = H3;
+  E = H4;
+  F = H5;
+  G = H6;
+  H = H7;
+
+#pragma unroll
+  for (t = 0; t < 61; ++t) {
+    if (t >= 16)
+      W[t] = gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16];
+    T1 = H + sigma1(E) + ch(E, F, G) + K[t] + W[t];
+    T2 = sigma0(A) + maj(A, B, C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+
+  if (E != 0xa41f32e7)
+    return (uint8)(UINT_MAX);
+
+  for (; t < 64; ++t) {
+    W[t] = gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16];
+    T1 = H + sigma1(E) + ch(E, F, G) + K[t] + W[t];
+    T2 = sigma0(A) + maj(A, B, C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+
+  return (uint8)(H0, H1, H2, H3, H4, H5, H6, H7) + (uint8)(A, B, C, D, E, F, G, H);
+}
+
 uint8 sha256_finish(char* message, uint ulen, uint orig_len, uint8 digest) {
-  uint K[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-  };
+  uint K[64] = { K_CONSTS };
 
   unsigned t;
   uint msg_pad;
@@ -343,6 +427,33 @@ bool compare_hash(uint8 min_hash, uint8 hash) {
   if (hash.s1 > min_hash.s1) return false;
 
   if (hash.s0 < min_hash.s0) return true;
+  if (hash.s0 > min_hash.s0) return false;
+
+  /*
+  if (hash.s0 < min_hash.s0) return true;
+  if (hash.s0 > min_hash.s0) return false;
+
+  if (hash.s1 < min_hash.s1) return true;
+  if (hash.s1 > min_hash.s1) return false;
+
+  if (hash.s2 < min_hash.s2) return true;
+  if (hash.s2 > min_hash.s2) return false;
+
+  if (hash.s3 < min_hash.s3) return true;
+  if (hash.s3 > min_hash.s3) return false;
+
+  if (hash.s4 < min_hash.s4) return true;
+  if (hash.s4 > min_hash.s4) return false;
+
+  if (hash.s5 < min_hash.s5) return true;
+  if (hash.s5 > min_hash.s5) return false;
+
+  if (hash.s6 < min_hash.s6) return true;
+  if (hash.s6 > min_hash.s6) return false;
+
+  if (hash.s7 < min_hash.s7) return true;
+  // if (hash.s7 > min_hash.s7) return false;
+  */
   return false;
 }
 
@@ -364,11 +475,8 @@ __kernel void mine(__global uint* target,
   uint nonce_begin = nonce_begins[id];
   uint nonce_end = nonce_ends[id];
   char message_prenonce[64];
-  char message_nonce[16];
-  char message2[32];
   uint message_len = message_len_ptr[0];
-  uint nonce_off   = message_len - 64;
-  uint i, j;
+  uint i;
 
   prefetch(message_ptr, message_len);
 
@@ -376,10 +484,21 @@ __kernel void mine(__global uint* target,
   for (i = 0; i < countof(message_prenonce); ++i) {
     message_prenonce[i] = message_ptr[i];
   }
-#pragma unroll
-  for (i = 0, j = 64; j < message_len; ++i, ++j) {
-    message_nonce[i] = message_ptr[j];
-  }
+
+  uint merkle_root, timestamp, target_bits;
+  i = 64;
+  merkle_root  = (uchar)(message_ptr[i++]) << 24;
+  merkle_root |= (uchar)(message_ptr[i++]) << 16;
+  merkle_root |= (uchar)(message_ptr[i++]) <<  8;
+  merkle_root |= (uchar)(message_ptr[i++]) <<  0;
+  timestamp    = (uchar)(message_ptr[i++]) << 24;
+  timestamp   |= (uchar)(message_ptr[i++]) << 16;
+  timestamp   |= (uchar)(message_ptr[i++]) <<  8;
+  timestamp   |= (uchar)(message_ptr[i++]) <<  0;
+  target_bits  = (uchar)(message_ptr[i++]) << 24;
+  target_bits |= (uchar)(message_ptr[i++]) << 16;
+  target_bits |= (uchar)(message_ptr[i++]) <<  8;
+  target_bits |= (uchar)(message_ptr[i++]) <<  0;
 
   uint8 min_hash = (uint8)(UINT_MAX);
   uint  min_nonce;
@@ -388,27 +507,50 @@ __kernel void mine(__global uint* target,
   uint8 hash_nonce;
   uint8 hash2_nonce;
 
-  hash_prenonce = sha256_init();
-  hash_prenonce = sha256_update(message_prenonce, 64, hash_prenonce);
+  hash_prenonce = sha256_update(message_prenonce, 64, sha256_init());
+  /*
+  uint W[64];
+  uint A, B, C, D, E, F, G, H, T1, T2;
+  A = hash_prenonce.s0;
+  B = hash_prenonce.s1;
+  C = hash_prenonce.s2;
+  D = hash_prenonce.s3;
+  E = hash_prenonce.s4;
+  F = hash_prenonce.s5;
+  G = hash_prenonce.s6;
+  H = hash_prenonce.s7;
 
+  W[0] = merkle_root;
+  W[1] = timestamp;
+  W[2] = target;
+  W[3] = nonce;
+  W[4] = 0x80000000;
+#pragma unroll
+  for (t = 5; t < 15; ++t)
+    W[t] = 0;
+  W[15] = 80 * 8;
+#pragma unroll
+  for (t = 0; t < 3; ++t) {
+    T1 = H + sigma1(E) + ch(E, F, G) + K[t] + W[t];
+    T2 = sigma0(A) + maj(A, B, C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+*/
   for (uint nonce = nonce_begin; ; ++nonce) {
-    message_nonce[nonce_off - 1] = (uchar)((nonce >>  0) & 0xff);
-    message_nonce[nonce_off - 2] = (uchar)((nonce >>  8) & 0xff);
-    message_nonce[nonce_off - 3] = (uchar)((nonce >> 16) & 0xff);
-    message_nonce[nonce_off - 4] = (uchar)((nonce >> 24) & 0xff);
+    hash_nonce = sha256_nonce_block(merkle_root,
+                                    timestamp,
+                                    target_bits,
+                                    nonce,
+                                    hash_prenonce);
 
-    hash_nonce = sha256_finish_padded(message_nonce, 16, message_len, hash_prenonce);
-
-    flatten_hash(&message2[0*4], hash_nonce.s0);
-    flatten_hash(&message2[1*4], hash_nonce.s1);
-    flatten_hash(&message2[2*4], hash_nonce.s2);
-    flatten_hash(&message2[3*4], hash_nonce.s3);
-    flatten_hash(&message2[4*4], hash_nonce.s4);
-    flatten_hash(&message2[5*4], hash_nonce.s5);
-    flatten_hash(&message2[6*4], hash_nonce.s6);
-    flatten_hash(&message2[7*4], hash_nonce.s7);
-
-    hash2_nonce = sha256_finish_padded(message2, 32, 32, sha256_init());
+    hash2_nonce = sha256_second_hash(hash_nonce);
 
     hash2_nonce.s0 = htonl(hash2_nonce.s0);
     hash2_nonce.s1 = htonl(hash2_nonce.s1);
@@ -418,7 +560,7 @@ __kernel void mine(__global uint* target,
     hash2_nonce.s5 = htonl(hash2_nonce.s5);
     hash2_nonce.s6 = htonl(hash2_nonce.s6);
     hash2_nonce.s7 = htonl(hash2_nonce.s7);
-    
+
     if (compare_hash(min_hash, hash2_nonce)) {
       min_hash  = hash2_nonce;
       min_nonce = nonce;

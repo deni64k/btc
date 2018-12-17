@@ -6,7 +6,7 @@
 
 struct sha256_program {
   static constexpr std::size_t const max_batch_size = 128*1024;
-  static constexpr std::size_t const nonce_step = 1024;
+  static constexpr std::size_t const nonce_step = 4 * 1024;
   sha256_program(opencl::context& ctx/*,
                  hash32_t target_hash*/)
       : ctx_{ctx} {
