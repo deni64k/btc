@@ -10,7 +10,9 @@ Device | Hashrate, MiH/s
 ------ | ---------------
 AMD Radeon Pro 455 (MacBook Pro 15" 2016) | 180
 
-The miner reaches 8-leading-zeros hash in a few seconds, but it is not practical nowadays, since the target has 18 leading zeroes.
+The miner reaches 8-leading-zeros hash in a few seconds.
+
+Unfortunately, such hash rate it is not practical nowadays, since the target has 18 leading zeroes.
 
 # Build
 
@@ -58,8 +60,8 @@ For instance, my AMD Radeon Pro 455 is the third in the list, so I pass `--devic
 The implementation doesn't count protocol differences, misbehaving peers, and proper sharing GPU with other applications. For instance, once a peer disconnected, the client exits with an exception.
 
 So, if you are brave enough to run this, be aware that:
-* Heavy-on-GPU applications are closed, such as Chrome (otherwise all hangs and a hard reboot is required), and
-* You may try to run the client multiple times if a peer drops the connection, and you see an error `Operation not permitted`.
+* Heavy-on-GPU applications should be closed, like Chrome (otherwise all hangs and a hard reboot is required), and
+* You may have to run the client multiple times if a peer drops the connection, and you see an error `Operation not permitted`.
 
 # Roadmap
 
