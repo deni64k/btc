@@ -699,6 +699,7 @@ struct node_t {
                  std::numeric_limits<std::uint32_t>::min(),
                  std::numeric_limits<std::uint32_t>::max());
           } while (std::next_permutation(mining_txs.begin(), mining_txs.end(), by_fee));
+          INFO() << "all permutations have been attempted";
         });
 
         miner_thr.detach();

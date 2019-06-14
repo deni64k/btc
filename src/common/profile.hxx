@@ -18,7 +18,7 @@ struct profile {
       --sec;
       nsec += 1000000000ULL;
     }
-    return double(sec) + double(nsec) / 1e9;
+    return static_cast<double>(sec) + static_cast<double>(nsec) / 1e9;
   }
 
  private:

@@ -7,7 +7,7 @@
 #include "opencl/opencl.hxx"
 
 struct sha256_program {
-  static constexpr std::size_t const max_batch_size = 256*1024;
+  static constexpr std::size_t const max_batch_size = 256 * 1024;
   static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
   static constexpr std::size_t const opencl_local_size = 64;
 
@@ -129,7 +129,8 @@ struct sha256_program {
     std::vector<std::uint32_t> min_nonces;
     min_hashes.reserve(opencl_local_size);
     min_nonces.reserve(opencl_local_size);
-    for (unsigned offset = 0; offset < nonce_iterations; ) {
+    unsigned offset = 0;
+    for (; offset < nonce_iterations; ) {
       iteration_time.start();
 
       unsigned rem = nonce_iterations - offset;
@@ -173,8 +174,8 @@ struct sha256_program {
 
       clFinish(ctx_.command_queue());
 
-      // using namespace std::chrono_literals;
-      // std::this_thread::sleep_for(100ms);
+      using namespace std::chrono_literals;
+      std::this_thread::sleep_for(100ms);
 
       auto iter = std::min_element(min_hashes.cbegin(), min_hashes.cend());
       hash32_t min_hash_local = *iter;
@@ -209,8 +210,9 @@ struct sha256_program {
     double hashing_took = hashing_time.seconds();
 
     INFO() << "mining took " << hashing_took << 's'
+           << "\toffset: " << offset
            << "\thashrate: " << std::fixed << std::setprecision(3)
-           << ((nonce_end - nonce_begin) / hashing_took / 1e6) << " MiH/s";
+           << (nonce_step * offset / hashing_took / 1e6) << " MiH/s";
     std::reverse(min_hash.begin(), min_hash.end());
     
     return std::make_pair(std::move(min_hash), min_nonce);
