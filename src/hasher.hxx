@@ -1,12 +1,16 @@
 #pragma once
 
+#include <chrono>
+
 #include "common/types.hxx"
 #include "common/profile.hxx"
 #include "opencl/opencl.hxx"
 
 struct sha256_program {
-  static constexpr std::size_t const max_batch_size = 128*1024;
-  static constexpr std::size_t const nonce_step = 4 * 1024;
+  static constexpr std::size_t const max_batch_size = 256*1024;
+  static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
+  static constexpr std::size_t const opencl_local_size = 64;
+
   sha256_program(opencl::context& ctx/*,
                  hash32_t target_hash*/)
       : ctx_{ctx} {
@@ -26,107 +30,39 @@ struct sha256_program {
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clCreateKernel failed");
 
-    mem_target_hash_ = clCreateBuffer(
-        ctx_.ctx(),
-        // CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR,
-        CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-        // target_hash.size() * sizeof(target_hash[0]), target_hash.data(), &rv);
-        sizeof(hash32_t), nullptr, &rv);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clCreateBuffer failed");
-
-    mem_message_ = clCreateBuffer(
-        ctx_.ctx(),
-        CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-        256, nullptr, &rv);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clCreateBuffer failed");
-
-    mem_message_len_ = clCreateBuffer(
-        ctx_.ctx(),
-        CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-        sizeof(cl_uint), nullptr, &rv);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clCreateBuffer failed");
-
-    mem_nonce_begins_ = clCreateBuffer(
-        ctx_.ctx(),
-        CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-        sizeof(std::uint32_t) * max_batch_size, nullptr, &rv);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clCreateBuffer failed");
-
-    mem_nonce_ends_ = clCreateBuffer(
-        ctx_.ctx(),
-        CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-        sizeof(std::uint32_t) * max_batch_size, nullptr, &rv);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clCreateBuffer failed");
-
     mem_min_hashes_ = clCreateBuffer(
         ctx_.ctx(),
-        CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY,
-        sizeof(hash32_t) * max_batch_size, nullptr, &rv);
+        CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY,
+        sizeof(hash32_t) * max_batch_size,
+        nullptr, &rv);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clCreateBuffer failed");
 
     mem_min_nonces_ = clCreateBuffer(
         ctx_.ctx(),
-        CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY,
-        sizeof(std::uint32_t) * max_batch_size, nullptr, &rv);
+        CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY,
+        sizeof(std::uint32_t) * max_batch_size,
+        nullptr, &rv);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clCreateBuffer failed");
 
-    rv = clSetKernelArg(hasher_, 0, sizeof(mem_target_hash_), &mem_target_hash_);
+    int i = 5;
+    rv = clSetKernelArg(hasher_, i++, sizeof(hash32_t) * opencl_local_size, nullptr);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 1, sizeof(mem_message_), &mem_message_);
+    rv = clSetKernelArg(hasher_, i++, sizeof(std::uint32_t) * opencl_local_size, nullptr);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 2, sizeof(mem_message_len_), &mem_message_len_);
+    rv = clSetKernelArg(hasher_, i++, sizeof(mem_min_hashes_), &mem_min_hashes_);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 3, sizeof(mem_nonce_begins_), &mem_nonce_begins_);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 4, sizeof(mem_nonce_ends_), &mem_nonce_ends_);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 5, sizeof(mem_min_hashes_), &mem_min_hashes_);
-    if (rv != CL_SUCCESS)
-      throw std::runtime_error("clSetKernelArg failed");
-    rv = clSetKernelArg(hasher_, 6, sizeof(mem_min_nonces_), &mem_min_nonces_);
+    rv = clSetKernelArg(hasher_, i++, sizeof(mem_min_nonces_), &mem_min_nonces_);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clSetKernelArg failed");
   }
 
   ~sha256_program() {
     cl_int rv;
-    rv = clReleaseMemObject(mem_target_hash_);
-    if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
-      return;
-    }
-    rv = clReleaseMemObject(mem_message_);
-    if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
-      return;
-    }
-    rv = clReleaseMemObject(mem_message_len_);
-    if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
-      return;
-    }
-    rv = clReleaseMemObject(mem_nonce_begins_);
-    if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
-      return;
-    }
-    rv = clReleaseMemObject(mem_nonce_ends_);
-    if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
-      return;
-    }
     rv = clReleaseMemObject(mem_min_hashes_);
     if (rv != CL_SUCCESS) {
       ERROR() << "clReleaseMemObject failed";
@@ -147,84 +83,98 @@ struct sha256_program {
   std::pair<hash32_t, std::uint32_t>
   operator () (hash32_t target_hash,
                std::vector<std::uint8_t> const& message,
+               std::array<std::uint32_t, 16> const& W, hash32_t& digest_hash,
                std::uint32_t nonce_begin,
                std::uint32_t nonce_end) {
     common::profile hashing_time;
     common::profile iteration_time;
     hashing_time.start();
 
-    std::size_t const nonce_iterations = (nonce_end - nonce_begin + nonce_step - 1) / nonce_step;
-    std::vector<std::uint32_t> nonce_begins;
-    std::vector<std::uint32_t> nonce_ends;
-    nonce_begins.reserve(nonce_iterations);
-    nonce_ends.reserve(nonce_iterations);
+    std::size_t nonce_iterations = (std::size_t{nonce_end - nonce_begin} + nonce_step - 1) / nonce_step;
 
     std::uint32_t min_nonce;
     hash32_t min_hash;
     std::fill(min_hash.begin(), min_hash.end(), 0xffffffff);
 
-    unsigned i = 0;
-    for (; i < nonce_iterations - 1; ++i) {
-      nonce_begins.push_back(nonce_begin + nonce_step * i);
-      nonce_ends.push_back(nonce_begin + nonce_step * i + (nonce_step-1));
-    }
-    nonce_begins.push_back(nonce_begin + nonce_step * i);
-    nonce_ends.push_back(nonce_end);
+    std::uint32_t merkle_root, timestamp, target_bits;
+    std::uint8_t const *message_ptr = message.data() + 64;
+    merkle_root  = (*message_ptr++) << 24;
+    merkle_root |= (*message_ptr++) << 16;
+    merkle_root |= (*message_ptr++) <<  8;
+    merkle_root |= (*message_ptr++) <<  0;
+    timestamp    = (*message_ptr++) << 24;
+    timestamp   |= (*message_ptr++) << 16;
+    timestamp   |= (*message_ptr++) <<  8;
+    timestamp   |= (*message_ptr++) <<  0;
+    target_bits  = (*message_ptr++) << 24;
+    target_bits |= (*message_ptr++) << 16;
+    target_bits |= (*message_ptr++) <<  8;
+    target_bits |= (*message_ptr++) <<  0;
 
     cl_int  rv;
-    cl_uint len = message.size();
-    rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_target_hash_, CL_TRUE, 0,
-                              target_hash.size() * sizeof(target_hash[0]), target_hash.data(),
-                              0, nullptr, nullptr);
+    rv = clSetKernelArg(hasher_, 0, sizeof(merkle_root), &merkle_root);
     if (rv != CL_SUCCESS)
-      throw std::runtime_error("clEnqueueWriteBuffer failed");
-    rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_message_, CL_TRUE, 0,
-                              message.size(), message.data(), 0, nullptr, nullptr);
+      throw std::runtime_error("clSetKernelArg failed");
+    rv = clSetKernelArg(hasher_, 1, sizeof(timestamp), &timestamp);
     if (rv != CL_SUCCESS)
-      throw std::runtime_error("clEnqueueWriteBuffer failed");
-    rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_message_len_, CL_TRUE, 0,
-                              sizeof(len), &len, 0, nullptr, nullptr);
+      throw std::runtime_error("clSetKernelArg failed");
+    rv = clSetKernelArg(hasher_, 2, sizeof(target_bits), &target_bits);
+    if (rv != CL_SUCCESS)
+      throw std::runtime_error("clSetKernelArg failed");
+    rv = clSetKernelArg(hasher_, 3, sizeof(digest_hash), digest_hash.data());
+    if (rv != CL_SUCCESS)
+      throw std::runtime_error("clSetKernelArg failed");
 
+    std::vector<hash32_t> min_hashes;
+    std::vector<std::uint32_t> min_nonces;
+    min_hashes.reserve(opencl_local_size);
+    min_nonces.reserve(opencl_local_size);
     for (unsigned offset = 0; offset < nonce_iterations; ) {
       iteration_time.start();
 
       unsigned rem = nonce_iterations - offset;
       unsigned batch_size = std::min<unsigned>(rem, max_batch_size);
 
+      rv = clSetKernelArg(hasher_, 4, sizeof(offset), &offset);
       if (rv != CL_SUCCESS)
-        throw std::runtime_error("clEnqueueWriteBuffer failed");
-      rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_nonce_begins_, CL_TRUE, 0,
-                                batch_size * sizeof(nonce_begins[0]), &nonce_begins[offset],
-                                0, nullptr, nullptr);
-      if (rv != CL_SUCCESS)
-        throw std::runtime_error("clEnqueueWriteBuffer failed");
-      rv = clEnqueueWriteBuffer(ctx_.command_queue(), mem_nonce_ends_, CL_TRUE, 0,
-                                batch_size * sizeof(nonce_ends[0]), &nonce_ends[offset],
-                                0, nullptr, nullptr);
-      if (rv != CL_SUCCESS)
-        throw std::runtime_error("clEnqueueWriteBuffer failed");
+        throw std::runtime_error("clSetKernelArg failed");
 
       std::size_t global_item_size = batch_size;
-      [[maybe_unused]] std::size_t local_item_size = 1;
+      std::size_t local_item_size  = opencl_local_size;
+      if (global_item_size < max_batch_size) {
+        if (global_item_size < local_item_size) {
+          local_item_size = 1;
+        } else {
+          if (batch_size % local_item_size > 0)
+            ++nonce_iterations;
+          batch_size = std::size_t(batch_size / local_item_size) * local_item_size;
+          global_item_size = batch_size;
+        }
+      }
       rv = clEnqueueNDRangeKernel(ctx_.command_queue(), hasher_, 1,
-                                  nullptr, &global_item_size, nullptr,
+                                  nullptr, &global_item_size, &local_item_size,
                                   0, nullptr, nullptr);
       if (rv != CL_SUCCESS)
         throw std::runtime_error("clEnqueueNDRangeKernel failed");
 
-      std::vector<hash32_t> min_hashes(batch_size);
-      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_hashes_, CL_TRUE, 0, 
+      min_hashes.resize(batch_size / local_item_size);
+      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_hashes_, CL_FALSE, 0, 
                                min_hashes.size() * sizeof(min_hashes[0]), min_hashes.data(),
                                0, nullptr, nullptr);
       if (rv != CL_SUCCESS)
         throw std::runtime_error("clEnqueueReadBuffer failed");
 
-      std::vector<std::uint32_t> min_nonces(batch_size);
-      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_nonces_, CL_TRUE, 0, 
+      min_nonces.resize(batch_size / local_item_size);
+      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_nonces_, CL_FALSE, 0, 
                                min_nonces.size() * sizeof(min_nonces[0]), min_nonces.data(),
                                0, nullptr, nullptr);
       if (rv != CL_SUCCESS)
         throw std::runtime_error("clEnqueueReadBuffer failed");
+
+      clFinish(ctx_.command_queue());
+
+      // using namespace std::chrono_literals;
+      // std::this_thread::sleep_for(100ms);
 
       auto iter = std::min_element(min_hashes.cbegin(), min_hashes.cend());
       hash32_t min_hash_local = *iter;
@@ -248,7 +198,7 @@ struct sha256_program {
              << "\tprogress: "
              << (float(offset) / float(nonce_iterations))
              << "\thashrate: "
-             << ((nonce_ends[offset + (batch_size - 1)] - nonce_begins[offset] + 1) / iteration_took / 1e6)
+             << (nonce_step * batch_size / iteration_took / 1e6)
              << "MiH/s";
 
       if (compare_hashes(min_hash_sofar, target_hash) <= 0)
@@ -270,11 +220,6 @@ struct sha256_program {
   opencl::base_program program_;
 
   cl_kernel hasher_;
-  cl_mem mem_target_hash_;
-  cl_mem mem_message_;
-  cl_mem mem_message_len_;
-  cl_mem mem_nonce_begins_;
-  cl_mem mem_nonce_ends_;
   cl_mem mem_min_hashes_;
   cl_mem mem_min_nonces_;
 };

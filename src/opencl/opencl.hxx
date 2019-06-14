@@ -123,7 +123,8 @@ struct context {
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clCreateProgramWithSource failed");
 
-    rv = clBuildProgram(prog, 1, &device_, "-Werror", &base_program::pfn_notify, this);
+    rv = clBuildProgram(prog, 1, &device_, "-Werror",
+                        &base_program::pfn_notify, this);
     if (rv != CL_SUCCESS)
       throw std::runtime_error("clBuildProgram failed");
 
@@ -131,12 +132,27 @@ struct context {
   }
 };
 
-void base_program::pfn_notify(cl_program, void* user_data) {
-  ERROR() << "program::pfn_notify";
+void base_program::pfn_notify(cl_program prog, void* user_data) {
+  INFO() << "program::pfn_notify: program has compiled";
+  std::size_t binary_size;
+
+  auto rv = clGetProgramInfo(prog, CL_PROGRAM_BINARY_SIZES,
+                             sizeof(binary_size), &binary_size, nullptr);
+  if (rv != CL_SUCCESS) {
+    ERROR() << "clGetProgramInfo failed";
+    return;
+  }
+  INFO() << "program::pfn_notify: binary size: " << binary_size;
+
+  char *binary;
+  rv = clGetProgramInfo(prog, CL_PROGRAM_BINARIES,
+                        binary_size, &binary, nullptr);
+  std::ofstream ofs("kernel.bin");
+  ofs.write(binary, binary_size);
 }
 
 void context::pfn_notify(char const* errinfo, void const* private_info,
-                                std::size_t cb, void* user_data) {
+                         std::size_t cb, void* user_data) {
   ERROR() << "context::pfn_notify: " << errinfo;
 }
 

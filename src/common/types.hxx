@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdlib>
 
+#include "common/logging.hxx"
 #include "serdes.hxx"
 
 using hash_t   = std::array<std::uint8_t, 32>;
@@ -85,7 +86,7 @@ std::string addr_to_s(addr_t addr) {
 
 std::string prettify_hash(std::string hash) {
   for (unsigned i = hash.size() - 8; i > 0; i -= 8) {
-    hash.insert(i - 1, 1, '\'');
+    hash.insert(i, 1, '\'');
   }
   return std::move(hash);
 }

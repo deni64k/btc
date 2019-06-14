@@ -36,6 +36,7 @@
 #include <openssl/sha.h>
 #include <picosha2/picosha2.h>
 
+#include "common/crypto.hxx"
 #include "common/logging.hxx"
 #include "common/types.hxx"
 #include "hasher.hxx"
@@ -47,6 +48,8 @@
 
 static_assert(__cpp_concepts >= 201500, "Compile with -fconcepts");
 static_assert(__cplusplus >= 201500, "C++17 at least required");
+
+using namespace std::chrono_literals;
 
 template <typename... Payloads> hash_t compute_hash(Payloads&&... payloads);
 
@@ -400,8 +403,30 @@ struct node_t {
     if (sock_fd)
       close(sock_fd);
   }
+  
+  static int conn4(char const* addr) {
+    int sock_fd = -1;
+    int ret;
+    sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock_fd == -1) {
+      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
+                              "socket failed");
+    }
+    struct sockaddr_in server_addr;
+    bzero((char*)&server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    inet_pton(AF_INET, addr, &server_addr.sin_addr);
+    server_addr.sin_port = htons(8333);
+    ret = connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (ret == -1) {
+      close(sock_fd);
+      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
+                              "connect failed");
+    }
+    return sock_fd;
+  }
 
-  static int conn(char const* addr) {
+  static int conn6(char const* addr) {
     int sock_fd = -1;
     int ret;
     sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
@@ -421,6 +446,10 @@ struct node_t {
                               "connect failed");
     }
     return sock_fd;
+  }
+
+  static int conn(char const* addr) {
+    return strchr(addr, ':') ? conn6(addr) : conn4(addr);
   }
 
   void run() {
@@ -598,10 +627,15 @@ struct node_t {
           };
           auto buf = block_hash_buf(block);
 
+          auto digest_state = btc::crypto::sha256_first_block(buf.data(), buf.size());
+
           INFO() << "target: " << prettify_hash(target_to_s(block.bits));
           INFO() << "mining with block:\n" << block;
 
-          auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, nonce_begin, nonce_end);
+          // std::this_thread::sleep_for(30ms);
+          auto [min_hash, min_nonce] = hasher_prog(target_hash, buf,
+                                                   digest_state.W, digest_state.hash,
+                                                   nonce_begin, nonce_end);
 
           INFO() << "\tmin_hash:  " << prettify_hash(to_string(min_hash));
           INFO() << "\tmin_nonce: " << min_nonce;
@@ -1008,6 +1042,8 @@ int main(int argc, char* argv[]) {
     db.load_block(height, block);
     auto buf = block_hash_buf(block);
 
+    auto digest_state = btc::crypto::sha256_first_block(buf.data(), buf.size());
+
     auto target_hash = target_to_hash32(block.bits);
     INFO() << "target: " << prettify_hash(to_string(target_hash));
     INFO() << "hash: "   << prettify_hash(to_string(block.hash()));
@@ -1018,7 +1054,10 @@ int main(int argc, char* argv[]) {
 
     sha256_program hasher_prog(ctx);
     // auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, 0, 1);
-    auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, 0x00000000, 0xffffffff);
+    auto [min_hash, min_nonce] = hasher_prog(target_hash, buf,
+                                             digest_state.W, digest_state.hash,
+                                             // block.nonce-1, block.nonce+1);
+                                             0x00000000, 0xffffffff);
 
     INFO() << "min_hash <=> target_hash: " << compare_hashes(min_hash, target_hash);
     INFO() << "min_hash: " << to_string(min_hash);
