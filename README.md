@@ -68,9 +68,9 @@ So, if you are brave enough to run this, be aware that:
 - [x] Mining on CPU (commented out)
 - [x] Mining on GPU
 - [ ] Mining on FPGA
-- [ ] Integrating ASICs
+- [ ] Integration with ASICs
 - [ ] Distributed mining
 - [ ] Integration with mining pools
-- [ ] Better design for the protocol implementation including supporting multiple peers and error handling
+- [ ] Better design of the event loop including support multiple peers and error handling
 - [ ] Integrity checks for the blockchain
 - [ ] Integrity guaranties for the local copy of the blockchain
