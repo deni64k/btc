@@ -16,7 +16,10 @@ enum {
 
 struct header {
   enum: std::uint32_t {
-    NETWORK_MAIN = 0xD9B4BEF9
+    // Bitcoin
+    // NETWORK_MAIN = 0xD9B4BEF9
+    // Litecoin?
+    NETWORK_MAIN = 0xDBB6C0FB
   };
 
   // Magic value indicating message origin network, and used to seek to next message when stream state is unknown

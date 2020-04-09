@@ -1,4 +1,7 @@
-add_executable(btc main.cxx)
+add_executable(btc
+        main.cxx
+        scrypt.cxx
+        scrypt-sse2.cxx)
 
 target_link_libraries(btc ${OPENSSL_LIBRARIES})
 target_link_libraries(btc ${OpenCL_LIBRARIES})

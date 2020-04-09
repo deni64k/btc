@@ -16,6 +16,7 @@
 #define PP_STRINGIZE(x) PP_QUOTE(x)
 #define PP_WHERE        __FILE__ ":" PP_STRINGIZE(__LINE__)
 
+#if defined(__GNUC__) && __GNUC__ < 9
 namespace std {
 
 template <typename T>
@@ -25,6 +26,7 @@ template <typename T>
 using remove_cvref_t = typename remove_cvref<T>::type;
 
 }
+#endif
 
 template <typename T>
 concept bool Iterable = requires(T&& o) {

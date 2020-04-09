@@ -14,12 +14,12 @@ using addr_t = std::array<std::uint8_t, 16>;
 
 struct var_int {
   std::uint64_t num;
-  operator std::uint64_t () const { return num; }
+  constexpr operator std::uint64_t () const noexcept { return num; }
 };
 
 struct be_uint16_t {
   std::uint16_t num;
-  operator std::uint16_t () const { return num; }
+  constexpr operator std::uint16_t () const noexcept { return num; }
 };
 
 using var_str = std::string;
@@ -130,10 +130,10 @@ inline std::string target_to_s(std::uint32_t bits) {
   for (unsigned i = off+6; i < buf.size(); ++i) {
     buf[i] = 'f';
   }
-  return std::move(buf);
+  return buf;
 }
 
-inline hash_t to_hash(hash32_t const& hash) {
+inline hash_t to_hash(hash32_t const& hash) noexcept {
   hash_t result_hash;
   for (unsigned i = 0, j = 0; i < hash.size(); ++i) {
     result_hash[j++] = (hash[i] >> (sizeof(std::uint32_t) - 4)*8) & 0xff;
@@ -141,10 +141,10 @@ inline hash_t to_hash(hash32_t const& hash) {
     result_hash[j++] = (hash[i] >> (sizeof(std::uint32_t) - 2)*8) & 0xff;
     result_hash[j++] = (hash[i] >> (sizeof(std::uint32_t) - 1)*8) & 0xff;
   }
-  return std::move(result_hash);
+  return result_hash;
 }
 
-inline hash_t to_hash(hash64_t const& hash) {
+inline hash_t to_hash(hash64_t const& hash) noexcept {
   hash_t result_hash;
   for (unsigned i = 0, j = 0; i < hash.size(); ++i) {
     result_hash[j++] = (hash[i] >> (sizeof(std::uint64_t) - 8)*8) & 0xff;
@@ -156,19 +156,19 @@ inline hash_t to_hash(hash64_t const& hash) {
     result_hash[j++] = (hash[i] >> (sizeof(std::uint64_t) - 2)*8) & 0xff;
     result_hash[j++] = (hash[i] >> (sizeof(std::uint64_t) - 1)*8) & 0xff;
   }
-  return std::move(result_hash);
+  return result_hash;
 }
 
-inline hash32_t to_hash32(hash64_t const& hash) {
+inline hash32_t to_hash32(hash64_t const& hash) noexcept {
   hash32_t result_hash;
   for (unsigned i = 0, j = 0; i < hash.size(); ++i) {
     result_hash[j++] = (hash[i] >> (sizeof(std::uint64_t) - 8)*8) & 0xffffffff;
     result_hash[j++] = (hash[i] >> (sizeof(std::uint64_t) - 4)*8) & 0xffffffff;
   }
-  return std::move(result_hash);
+  return result_hash;
 }
 
-inline hash64_t vectorize_hash(hash_t const& hash) {
+constexpr hash64_t vectorize_hash(hash_t const& hash) noexcept {
   std::array<std::uint64_t, 4> vec = {0, 0, 0, 0};
   for (unsigned i = 0; i < vec.size(); ++i) {
     for (int j = i*8, k = 64-8; k >= 0; ++j, k -= 8) {
@@ -176,10 +176,10 @@ inline hash64_t vectorize_hash(hash_t const& hash) {
       vec[i] |= std::uint64_t{b} << k;
     }
   }
-  return std::move(vec);
+  return vec;
 }
 
-inline hash64_t target_to_hash64(std::uint32_t bits) {
+inline hash64_t target_to_hash64(std::uint32_t bits) noexcept {
   auto target = target_to_s(bits);
   INFO() << "target_to_hash64: target: " << target;
   hash64_t vec;
@@ -187,10 +187,10 @@ inline hash64_t target_to_hash64(std::uint32_t bits) {
               &vec[0], &vec[1], &vec[2], &vec[3]);
   for (auto& x : vec)
     x = (std::uint64_t(ntohl(x & 0xffffffff)) << 32) | ntohl(x >> 32);
-  return std::move(vec);
+  return vec;
 }
 
-inline hash32_t target_to_hash32(std::uint32_t bits) {
+inline hash32_t target_to_hash32(std::uint32_t bits) noexcept {
   auto target = target_to_s(bits);
   // INFO() << "target_to_hash32: target: " << target;
   hash32_t vec;
@@ -199,10 +199,10 @@ inline hash32_t target_to_hash32(std::uint32_t bits) {
               &vec[3], &vec[2], &vec[1], &vec[0]);
   for (auto& x : vec)
     x = ntohl(x);
-  return std::move(vec);
+  return vec;
 }
 
-int compare_hashes(hash32_t const& lhs, hash32_t const& rhs) {
+constexpr int compare_hashes(hash32_t const& lhs, hash32_t const& rhs) noexcept {
   for (int i = lhs.size() - 1; i >= 0; --i) {
     if (lhs[i] < rhs[i])
       return -1;

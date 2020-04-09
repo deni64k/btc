@@ -45,6 +45,16 @@
 #include "io/io.hxx"
 #include "proto/script.hxx"
 #include "utility.hxx"
+#include "scrypt.h"
+
+// #define BITCOIN
+#define LITECOIN
+
+#if defined(BITCOIN)
+# define PORT 8333
+#elif defined(LITECOIN)
+# define PORT 9333
+#endif
 
 static_assert(__cpp_concepts >= 201500, "Compile with -fconcepts");
 static_assert(__cplusplus >= 201500, "C++17 at least required");
@@ -123,12 +133,17 @@ hash_t compute_hash(Payloads&&... payloads) {
   (ops.write(std::forward<Payloads>(payloads)), ...);
   std::string payload_raw = ss.str();
   
+#if 1 || defined(BITCOIN)
   hash_t crc;
   hash_t hash;
   picosha2::hash256(payload_raw.begin(), payload_raw.end(), hash.begin(), hash.end());
   picosha2::hash256(hash.begin(), hash.end(), crc.begin(), crc.end());
-
-  return std::move(crc);
+  return crc;
+#elif defined(LITECOIN)
+  hash_t hash;
+  scrypt_1024_1_1_256(payload_raw.data(), reinterpret_cast<char*>(hash.data()));
+  return hash;
+#endif
 }
 
 hash_t merkle_tree(std::vector<hash_t> hashes) {
@@ -183,10 +198,15 @@ proto::header make_header(char const command[], Payload&& payload) {
   to_stream(ss, payload);
   std::string payload_raw = ss.str();
   
+// #if defined(BITCOIN)
   std::vector<unsigned char> crc(picosha2::k_digest_size);
   std::vector<unsigned char> hash(picosha2::k_digest_size);
   picosha2::hash256(payload_raw.begin(), payload_raw.end(), hash.begin(), hash.end());
   picosha2::hash256(hash.begin(), hash.end(), crc.begin(), crc.end());
+// #elif defined(LITECOIN)
+//   hash_t crc;
+//   scrypt_1024_1_1_256(payload_raw.data(), reinterpret_cast<char*>(crc.data()));
+// #endif
 
   proto::header hdr{
     proto::header::NETWORK_MAIN,
@@ -211,7 +231,7 @@ addr_t make_addr6(char const* addr) {
     addr_bytes[j]   = addr_words[i] >> 8;
     addr_bytes[j+1] = addr_words[i];
   }
-  return std::move(addr_bytes);
+  return addr_bytes;
 }
 addr_t make_addr4(char const* addr) {
   std::array<std::uint8_t, 8> octs;
@@ -416,7 +436,7 @@ struct node_t {
     bzero((char*)&server_addr, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     inet_pton(AF_INET, addr, &server_addr.sin_addr);
-    server_addr.sin_port = htons(8333);
+    server_addr.sin_port = htons(PORT);
     ret = connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (ret == -1) {
       close(sock_fd);
@@ -438,7 +458,7 @@ struct node_t {
     bzero((char*)&server_addr, sizeof(server_addr));
     server_addr.sin6_family = AF_INET6;
     inet_pton(AF_INET6, addr, &server_addr.sin6_addr);
-    server_addr.sin6_port = htons(8333);
+    server_addr.sin6_port = htons(PORT);
     ret = connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (ret == -1) {
       close(sock_fd);
@@ -465,12 +485,12 @@ struct node_t {
         {
           proto::version::NODE_NETWORK,
           make_addr6(addr.c_str()),
-          8333
+          PORT
         },
         {
           proto::version::NODE_NETWORK,
           addr_from,
-          8333
+          PORT
         },
         gen_nonce(),
         "/Satoshi:0.16.3/",
@@ -765,6 +785,8 @@ struct node_t {
     from_socket(sock_fd, payload);
     node_version = payload.version;
     current_version = std::min(current_version, node_version);
+    INFO() << addr << ": [version] node user agent=" << payload.user_agent;
+    INFO() << addr << ": [version] node start height=" << payload.start_height;
     INFO() << addr << ": [version] node version=" << node_version;
     INFO() << addr << ": [version] current version=" << current_version;
 
@@ -1013,6 +1035,22 @@ void usage(char const* progname) {
 }
 
 int main(int argc, char* argv[]) {
+#if defined(LITECOIN)
+  // Note that of those which support the service bits prefix, most only support a subset of
+  // possible options.
+  // This is fine at runtime as we'll fall back to using them as a oneshot if they don't support the
+  // service bits we want, but we should get them updated to support all service bits wanted by any
+  // release ASAP to avoid it where possible.
+  // vSeeds.emplace_back("seed-a.litecoin.loshan.co.uk");
+  // vSeeds.emplace_back("dnsseed.thrasher.io");
+  // vSeeds.emplace_back("dnsseed.litecointools.com");
+  // vSeeds.emplace_back("dnsseed.litecoinpool.org");
+  // vSeeds.emplace_back("dnsseed.koin-project.com");
+
+  // std::string sse2detect = scrypt_detect_sse2();
+  // INFO() << "sse2detect=" << sse2detect;
+#endif
+
   char const* peer_addr = nullptr;
   unsigned platform_id = 0;
   unsigned device_id = 0;
@@ -1039,7 +1077,11 @@ int main(int argc, char* argv[]) {
   if (test_mining) {
     std::uint32_t const height = test_height;
     proto::block_headers block;
-    db_t db("block_headers.db");
+#if defined(BITCOIN)
+    db_t db("bitcoin_block_headers.db");
+#elif defined(LITECOIN)
+    db_t db("litecoin_block_headers.db");
+#endif
     db.load_block(height, block);
     auto buf = block_hash_buf(block);
 
@@ -1072,8 +1114,12 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  try {
-    db_t db("block_headers.db");
+  // try {
+#if defined(BITCOIN)
+    db_t db("bitcoin_block_headers.db");
+#elif defined(LITECOIN)
+    db_t db("litecoin_block_headers.db");
+#endif
     node_t node{peer_addr, db};
 
     g_ctx = std::make_unique<opencl::context>();
@@ -1083,10 +1129,10 @@ int main(int argc, char* argv[]) {
 
     g_ctx->cleanup();
 
-  } catch (std::system_error const& err) {
-    ERROR() << "Error occurred (" << err.code() << "): " << err.what();
-    return 1;
-  }
+  // } catch (std::system_error const& err) {
+  //   ERROR() << "Error occurred (" << err.code() << "): " << err.what();
+  //   return 1;
+  // }
 
   return 0;
 }
