@@ -1,5 +1,5 @@
 # BTC
-Yet another BTC client
+Yet another BTC and LTC client.
 
 # Why?
 To figure out how cryptocurrencies work in general and research mining.
