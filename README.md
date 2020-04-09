@@ -17,6 +17,8 @@ Unfortunately, such hash rate it is not practical nowadays, since the target has
 
 # Build
 
+## Unix-like
+
 It's a typical CMake project, but requires a few adjustments:
 
 * Latest gcc or cland supporing C++17 or later, and
@@ -34,7 +36,22 @@ cmake -DCMAKE_C_COMPILER=gcc-8                            \
 make
 ```
 
-YMMV
+## Windows
+
+* Use latest MSVC supporing `/std:c++latest`, and
+* CUDA SDK for OpenCL support.
+
+Before you build the project, you need to prepare dependencies:
+
+```
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.bat
+./vcpkg.exe integrate install
+./vcpkg.exe integrate boost:x64-windows
+```
+
+Then, open the project in MSVC and enjoy compiling.
 
 # Running
 
