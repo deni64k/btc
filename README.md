@@ -7,9 +7,9 @@ To figure out how cryptocurrencies work in general and research mining.
 # Hashrate
 
 Device | Where | Hashrate, MiH/s
------- | ---------------
-AMD Radeon Pro 455 | MacBook Pro 15" 2016 | 180
-GeForce RTX 2080 Ti | My Gaming Beast PC | 3360
+------ | ------| ---------------
+AMD Radeon Pro 455  | MacBook Pro 15" 2016 | 180
+GeForce RTX 2080 Ti | My Gaming Beast PC   | 3360
 
 The miner reaches 8-leading-zeros hash in a few seconds.
 
