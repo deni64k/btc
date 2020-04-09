@@ -32,7 +32,7 @@ struct base_program {
     if (program_) {
       auto rv = clReleaseProgram(program_);
       if (rv != CL_SUCCESS)
-        ERROR() << "clReleaseProgram failed";
+        LOG_ERROR() << "clReleaseProgram failed";
     }
   }
 
@@ -132,28 +132,36 @@ struct context {
   }
 };
 
-void base_program::pfn_notify(cl_program prog, void* user_data) {
-  INFO() << "program::pfn_notify: program has compiled";
-  std::size_t binary_size;
+void base_program::pfn_notify(cl_program prog, [[maybe_unused]] void* user_data) {
+  LOG_INFO() << "program::pfn_notify: program has compiled";
+  std::size_t binary_sizes[1];
 
   auto rv = clGetProgramInfo(prog, CL_PROGRAM_BINARY_SIZES,
-                             sizeof(binary_size), &binary_size, nullptr);
+                             sizeof(binary_sizes), binary_sizes, nullptr);
   if (rv != CL_SUCCESS) {
-    ERROR() << "clGetProgramInfo failed";
+    LOG_ERROR() << "clGetProgramInfo(CL_PROGRAM_BINARY_SIZES) failed";
     return;
   }
-  INFO() << "program::pfn_notify: binary size: " << binary_size;
+  LOG_INFO() << "program::pfn_notify: binary size: " << binary_sizes[0];
 
-  char *binary;
-  rv = clGetProgramInfo(prog, CL_PROGRAM_BINARIES,
-                        binary_size, &binary, nullptr);
-  std::ofstream ofs("kernel.bin");
-  ofs.write(binary, binary_size);
+  auto binary = std::make_unique<char[]>(binary_sizes[0]);
+  char* binaries[] = { binary.get() };
+  rv = clGetProgramInfo(prog, CL_PROGRAM_BINARIES, binary_sizes[0], binaries,
+                        nullptr);
+  if (rv != CL_SUCCESS) {
+    LOG_ERROR() << "clGetProgramInfo(CL_PROGRAM_BINARIES) failed";
+  } else {
+    std::ofstream ofs("kernel.bin", std::ios::binary | std::ios::out | std::ios::trunc);
+    if (binary && binary_sizes[0])
+      ofs.write(binary.get(), binary_sizes[0]);
+  }
 }
 
-void context::pfn_notify(char const* errinfo, void const* private_info,
-                         std::size_t cb, void* user_data) {
-  ERROR() << "context::pfn_notify: " << errinfo;
+void context::pfn_notify(char const* errinfo,
+                         [[maybe_unused]] void const* private_info,
+                         [[maybe_unused]] std::size_t cb,
+                         [[maybe_unused]] void* user_data) {
+  LOG_ERROR() << "context::pfn_notify: " << errinfo;
 }
 
 template <typename T>

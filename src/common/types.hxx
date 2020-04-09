@@ -85,7 +85,7 @@ std::string addr_to_s(addr_t addr) {
 }
 
 std::string prettify_hash(std::string hash) {
-  for (unsigned i = hash.size() - 8; i > 0; i -= 8) {
+  for (int i = static_cast<int>(hash.size()) - 8; i > 0; i -= 8) {
     hash.insert(i, 1, '\'');
   }
   return std::move(hash);
@@ -122,12 +122,12 @@ inline std::string target_to_s(std::uint32_t bits) {
   std::string buf = "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
   unsigned int val = bits & 0x00ffffffU;
   int exp = (bits >> 24) - 3;
-  int off = buf.size() - exp*2 - 6;
+  auto off = buf.size() - exp*2 - 6;
   std::snprintf(buf.data() + off, 7, "%06x", val);
   for (int i = 0; i < off; ++i) {
     buf[i] = '0';
   }
-  for (unsigned i = off+6; i < buf.size(); ++i) {
+  for (auto i = off + 6; i < buf.size(); ++i) {
     buf[i] = 'f';
   }
   return buf;
@@ -181,7 +181,7 @@ constexpr hash64_t vectorize_hash(hash_t const& hash) noexcept {
 
 inline hash64_t target_to_hash64(std::uint32_t bits) noexcept {
   auto target = target_to_s(bits);
-  INFO() << "target_to_hash64: target: " << target;
+  LOG_INFO() << "target_to_hash64: target: " << target;
   hash64_t vec;
   std::sscanf(target.c_str(), "%016llx%016llx%016llx%016llx",
               &vec[0], &vec[1], &vec[2], &vec[3]);
@@ -203,7 +203,7 @@ inline hash32_t target_to_hash32(std::uint32_t bits) noexcept {
 }
 
 constexpr int compare_hashes(hash32_t const& lhs, hash32_t const& rhs) noexcept {
-  for (int i = lhs.size() - 1; i >= 0; --i) {
+  for (int i = static_cast<int>(lhs.size()) - 1; i >= 0; --i) {
     if (lhs[i] < rhs[i])
       return -1;
     else if (lhs[i] > rhs[i])

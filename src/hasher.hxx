@@ -7,9 +7,12 @@
 #include "opencl/opencl.hxx"
 
 struct sha256_program {
-  static constexpr std::size_t const max_batch_size = 256 * 1024;
+  //static constexpr std::size_t const max_batch_size = 256 * 1024;
+  //static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
+  //static constexpr std::size_t const opencl_local_size = 64;
+  static constexpr std::size_t const max_batch_size = 32 * 1024;
   static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
-  static constexpr std::size_t const opencl_local_size = 64;
+  static constexpr std::size_t const opencl_local_size = 32;
 
   sha256_program(opencl::context& ctx/*,
                  hash32_t target_hash*/)
@@ -18,13 +21,14 @@ struct sha256_program {
 
     std::vector<char> hasher_prog_source;
     std::ifstream hasher_prog_is("shaders/hasher.cl");
-    while (true) {
-      char buf[512];
-      auto rv = hasher_prog_is.readsome(buf, sizeof(buf));
-      if (!rv)
-        break;
-      std::copy(buf, buf + rv, std::back_inserter(hasher_prog_source));
+    {
+      hasher_prog_is.seekg(0, std::ios::end);
+      std::size_t size = hasher_prog_is.tellg();
+      hasher_prog_source.resize(size);
+      hasher_prog_is.seekg(0);
+      hasher_prog_is.read(&hasher_prog_source.front(), size);
     }
+
     program_ = ctx_.make_program(hasher_prog_source.data(), hasher_prog_source.size());
     hasher_ = clCreateKernel(program_.program(), "mine", &rv);
     if (rv != CL_SUCCESS)
@@ -65,17 +69,17 @@ struct sha256_program {
     cl_int rv;
     rv = clReleaseMemObject(mem_min_hashes_);
     if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
+      LOG_ERROR() << "clReleaseMemObject failed";
       return;
     }
     rv = clReleaseMemObject(mem_min_nonces_);
     if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseMemObject failed";
+      LOG_ERROR() << "clReleaseMemObject failed";
       return;
     }
     rv = clReleaseKernel(hasher_);
     if (rv != CL_SUCCESS) {
-      ERROR() << "clReleaseKernel failed";
+      LOG_ERROR() << "clReleaseKernel failed";
       return;
     }
   }
@@ -83,7 +87,8 @@ struct sha256_program {
   std::pair<hash32_t, std::uint32_t>
   operator () (hash32_t target_hash,
                std::vector<std::uint8_t> const& message,
-               std::array<std::uint32_t, 16> const& W, hash32_t& digest_hash,
+               [[maybe_unused]] std::array<std::uint32_t, 16> const& W,
+               hash32_t& digest_hash,
                std::uint32_t nonce_begin,
                std::uint32_t nonce_end) {
     common::profile hashing_time;
@@ -129,16 +134,17 @@ struct sha256_program {
     std::vector<std::uint32_t> min_nonces;
     min_hashes.reserve(opencl_local_size);
     min_nonces.reserve(opencl_local_size);
-    unsigned offset = 0;
+    std::size_t offset = 0;
     for (; offset < nonce_iterations; ) {
       iteration_time.start();
 
-      unsigned rem = nonce_iterations - offset;
-      unsigned batch_size = std::min<unsigned>(rem, max_batch_size);
+      auto rem = nonce_iterations - offset;
+      auto batch_size = std::min<decltype(rem)>(rem, max_batch_size);
 
-      rv = clSetKernelArg(hasher_, 4, sizeof(offset), &offset);
+      auto cl_offset = static_cast<cl_uint>(offset);
+      rv = clSetKernelArg(hasher_, 4, sizeof(cl_offset), &cl_offset);
       if (rv != CL_SUCCESS)
-        throw std::runtime_error("clSetKernelArg failed");
+        throw std::runtime_error("clSetKernelArg failed: " + std::to_string(rv));
 
       std::size_t global_item_size = batch_size;
       std::size_t local_item_size  = opencl_local_size;
@@ -148,7 +154,7 @@ struct sha256_program {
         } else {
           if (batch_size % local_item_size > 0)
             ++nonce_iterations;
-          batch_size = std::size_t(batch_size / local_item_size) * local_item_size;
+          batch_size = static_cast<std::size_t>(batch_size / local_item_size) * local_item_size;
           global_item_size = batch_size;
         }
       }
@@ -159,7 +165,8 @@ struct sha256_program {
         throw std::runtime_error("clEnqueueNDRangeKernel failed");
 
       min_hashes.resize(batch_size / local_item_size);
-      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_hashes_, CL_FALSE, 0, 
+      rv = clEnqueueReadBuffer(ctx_.command_queue(), mem_min_hashes_, CL_FALSE,
+                               0, 
                                min_hashes.size() * sizeof(min_hashes[0]), min_hashes.data(),
                                0, nullptr, nullptr);
       if (rv != CL_SUCCESS)
@@ -173,9 +180,6 @@ struct sha256_program {
         throw std::runtime_error("clEnqueueReadBuffer failed");
 
       clFinish(ctx_.command_queue());
-
-      using namespace std::chrono_literals;
-      std::this_thread::sleep_for(100ms);
 
       auto iter = std::min_element(min_hashes.cbegin(), min_hashes.cend());
       hash32_t min_hash_local = *iter;
@@ -191,7 +195,7 @@ struct sha256_program {
 
       auto min_hash_sofar = min_hash;
       std::reverse(min_hash_sofar.begin(), min_hash_sofar.end());
-      INFO() << std::fixed << std::setprecision(3)
+      LOG_INFO() << std::fixed << std::setprecision(3)
              << "iteration took "
              << iteration_took << 's'
              << "\tmin hash so far: "
@@ -209,7 +213,7 @@ struct sha256_program {
     hashing_time.finish();
     double hashing_took = hashing_time.seconds();
 
-    INFO() << "mining took " << hashing_took << 's'
+    LOG_INFO() << "mining took " << hashing_took << 's'
            << "\toffset: " << offset
            << "\thashrate: " << std::fixed << std::setprecision(3)
            << (nonce_step * offset / hashing_took / 1e6) << " MiH/s";

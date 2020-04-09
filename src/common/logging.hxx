@@ -45,32 +45,32 @@ enum: std::uint_fast8_t {
 constexpr auto enabled_log_level = logging::LEVEL_DEBUG;
 auto& enabled_log_stream = std::cerr;
 
-#define PANIC()                                                         \
-  if (logging::LEVEL_PANIC <= enabled_log_level)                        \
+#define LOG_PANIC()                                                     \
+  if constexpr (logging::LEVEL_PANIC <= enabled_log_level)              \
     logging::details::log_record(enabled_log_stream).stream()           \
         << "PANIC: " << PP_WHERE << " `" << PP_FUNCTION << "': "
 
-#define ERROR()                                                 \
-  if (logging::LEVEL_ERROR <= enabled_log_level)                \
+#define LOG_ERROR()                                             \
+  if constexpr (logging::LEVEL_ERROR <= enabled_log_level)      \
     logging::details::log_record(enabled_log_stream).stream()   \
         << "ERROR: "
 
-#define WARN()                                                  \
-  if (logging::LEVEL_WARNING <= enabled_log_level)              \
+#define LOG_WARN()                                              \
+  if constexpr (logging::LEVEL_WARNING <= enabled_log_level)    \
     logging::details::log_record(enabled_log_stream).stream()   \
         << "WARN : "
 
-#define INFO()                                                  \
-  if (logging::LEVEL_INFO <= enabled_log_level)                 \
+#define LOG_INFO()                                              \
+  if constexpr (logging::LEVEL_INFO <= enabled_log_level)       \
     logging::details::log_record(enabled_log_stream).stream()   \
         << "INFO : "
 
-#define DEBUG()                                                         \
-  if (logging::LEVEL_DEBUG <= enabled_log_level)                        \
+#define LOG_DEBUG()                                                     \
+  if constexpr (logging::LEVEL_DEBUG <= enabled_log_level)              \
     logging::details::log_record(enabled_log_stream).stream()           \
         << "DEBUG: " << PP_WHERE << " `" << PP_FUNCTION << "': "
 
-#define TRACE()                                                         \
-  if (logging::LEVEL_TRACE <= enabled_log_level)                        \
+#define LOG_TRACE()                                                     \
+  if constexpr (logging::LEVEL_TRACE <= enabled_log_level)              \
     logging::details::log_record(enabled_log_stream).stream()           \
         << "TRACE: " << PP_WHERE << " `" << PP_FUNCTION << "': "

@@ -67,7 +67,7 @@ struct sha256_mining_state {
 };
 
 inline sha256_mining_state
-sha256_first_block(std::uint8_t const* message, std::uint32_t ulen) {
+sha256_first_block(std::uint8_t const* message, std::uint32_t) {
   std::array<std::uint32_t, 64> W;
   std::uint32_t A, B, C, D, E, F, G, H, T1, T2;
   std::uint_fast32_t t;

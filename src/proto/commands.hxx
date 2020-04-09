@@ -16,10 +16,13 @@ enum {
 
 struct header {
   enum: std::uint32_t {
+#if defined(BITCOIN)
     // Bitcoin
-    // NETWORK_MAIN = 0xD9B4BEF9
-    // Litecoin?
+    NETWORK_MAIN = 0xD9B4BEF9
+#else
+    // Litecoin
     NETWORK_MAIN = 0xDBB6C0FB
+#endif
   };
 
   // Magic value indicating message origin network, and used to seek to next message when stream state is unknown
@@ -108,7 +111,7 @@ struct headers {
 struct inv_vect {
   enum: std::uint32_t {
     // Any data of with this number may be ignored
-    ERROR = 0,
+    kError = 0,
     // Hash is related to a transaction
     MSG_TX = 1,
     // Hash is related to a data block

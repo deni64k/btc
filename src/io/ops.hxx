@@ -2,6 +2,10 @@
 
 #include <array>
 
+#if defined(_WIN32)
+# include <fileapi.h>
+#endif
+
 #include "common/types.hxx"
 #include "proto/commands.hxx"
 
@@ -9,7 +13,7 @@ template <typename base_ops, typename T>
 struct io_ops {
   static void read(base_ops& io, T& o) {
     using o_type = std::remove_cvref_t<T>;
-    io.read_impl(reinterpret_cast<char *>(&o), sizeof(o_type));
+    io.read_impl(reinterpret_cast<char*>(&o), sizeof(o_type));
   }
   static void write(base_ops& io, T const& o) {
     using o_type = std::remove_cvref_t<T>;
@@ -20,7 +24,7 @@ struct io_ops {
 template <typename base_ops, typename T, std::size_t N>
 struct io_ops<base_ops, std::array<T, N>> {
   static void read(base_ops& io, std::array<T, N>& o) {
-    io.read_impl(reinterpret_cast<char *>(&o.front()), sizeof(T) * N);
+    io.read_impl(reinterpret_cast<char*>(&o.front()), sizeof(T) * N);
   }
   static void write(base_ops& io, std::array<T, N> const& o) {
     io.write_impl(reinterpret_cast<char const*>(&o.front()), sizeof(T) * N);
@@ -66,21 +70,21 @@ struct io_ops<base_ops, var_int> {
 
   static void write(base_ops& io, var_int const o) {
     if (o.num < 0xfd) {
-      std::uint8_t num = o.num;
+      auto num = static_cast<std::uint8_t>(o.num);
       io.write_impl((char const*)&num, sizeof(num));
     } else if (o.num <= 0xffff) {
       std::uint8_t prefix = 0xfd;
-      std::uint16_t num = o.num;
+      auto num = static_cast<std::uint16_t>(o.num);
       io.write_impl((char const*)&prefix, sizeof(prefix));
       io.write_impl((char const*)&num, sizeof(num));
     } else if (o.num <= 0xffffffff) {
       std::uint8_t prefix = 0xfe;
-      std::uint32_t num = o.num;
+      auto num = static_cast<std::uint32_t>(o.num);
       io.write_impl((char const*)&prefix, sizeof(prefix));
       io.write_impl((char const*)&num, sizeof(num));
     } else {
       std::uint8_t prefix = 0xff;
-      std::uint64_t num = o.num;
+      auto num = static_cast<std::uint64_t>(o.num);
       io.write_impl((char const*)&prefix, sizeof(prefix));
       io.write_impl((char const*)&num, sizeof(num));
     }
@@ -197,45 +201,135 @@ struct io_ops<base_ops, T> {
 };
 
 struct socket_ops {
-  socket_ops(int sock): sock_{sock} {}
+  socket_ops(
+#if defined(_WIN32)
+             SOCKET sock
+#else
+             int sock
+#endif
+  ) : sock_{sock} {}
 
   template <typename T> void read(T& o) {
-    TRACE();
+    LOG_TRACE();
     io_ops<socket_ops, T>::read(*this, o);
   }
   template <typename T> void write(T const& o) {
-    TRACE();
+    LOG_TRACE();
     io_ops<socket_ops, T>::write(*this, o);
   }
 
   void read_impl(char* p, std::size_t s) {
     while (s > 0) {
+#if defined(_WIN32)
+      int rv = ::recv(sock_, p, static_cast<int>(s), 0);
+#else
       int rv = ::read(sock_, p, s);
-      if (rv <= 0)
-        throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)));
+#endif
+      if (rv <= 0) {
+#if defined(_WIN32)
+        auto xerrno = WSAGetLastError();
+#else
+        auto xerrno = errno;
+#endif
+
+        throw std::system_error(
+            std::make_error_code(static_cast<std::errc>(xerrno)),
+#if defined(_WIN32)
+            "recv failed"
+#else
+            "read failed"
+#endif
+        );
+      }
       s -= rv;
       p += rv;
     }
   }
   void write_impl(char const* p, std::size_t s) {
     while (s > 0) {
+#if defined(_WIN32)
+      int rv = ::send(sock_, p, static_cast<int>(s), 0);
+#else
       int rv = ::write(sock_, p, s);
-      if (rv <= 0)
-        throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)));
+#endif
+      if (rv <= 0) {
+#if defined(_WIN32)
+        auto xerrno = WSAGetLastError();
+#else
+        auto xerrno = errno;
+#endif
+        throw std::system_error(std::make_error_code(static_cast<std::errc>(xerrno)),
+#if defined(_WIN32)
+            "send failed"
+#else
+            "write failed"
+#endif
+        );
+      }
       s -= rv;
       p += rv;
     }
   }
 
  private:
-  int sock_;
+#if defined(_WIN32)
+  SOCKET
+#else
+  int
+#endif
+    sock_;
+};
+
+struct file_ops {
+  file_ops(int fd) : fd_{fd } {}
+
+  template <typename T>
+  void read(T& o) {
+    LOG_TRACE();
+    io_ops<file_ops, T>::read(*this, o);
+  }
+  template <typename T>
+  void write(T const& o) {
+    LOG_TRACE();
+    io_ops<file_ops, T>::write(*this, o);
+  }
+
+  void read_impl(char* p, std::size_t s) {
+    while (s > 0) {
+      int read_bytes = ::read(fd_, p, static_cast<int>(s));
+      if (read_bytes < 0) {
+        throw std::system_error(
+            std::make_error_code(static_cast<std::errc>(errno)), "read failed");
+      }
+      s -= read_bytes;
+      p += read_bytes;
+    }
+    assert(s == 0);
+  }
+
+  void write_impl(char const* p, std::size_t s) {
+    while (s > 0) {
+      LOG_TRACE() << "static_cast<int>(s)=" << static_cast<int>(s);
+      int written_bytes = ::write(fd_, p, static_cast<int>(s));
+      LOG_TRACE() << "written_bytes=" << written_bytes;
+      if (written_bytes <= 0)
+        throw std::system_error(
+            std::make_error_code(static_cast<std::errc>(errno)), "write failed");
+      s -= written_bytes;
+      p += written_bytes;
+    }
+    assert(s == 0);
+  }
+
+ private:
+  int fd_;
 };
 
 struct ostream_ops {
   ostream_ops(std::ostream &os): os_{os} {}
 
   template <typename T> void write(T const& o) {
-    TRACE();
+    LOG_TRACE();
     io_ops<ostream_ops, T>::write(*this, o);
   }
 
@@ -247,15 +341,52 @@ struct ostream_ops {
   std::ostream &os_;
 };
 
+template <>
+struct io_ops<file_ops, var_int> {
+  static void read(file_ops& io, var_int& o) {
+    LOG_TRACE();
+    io.read(o.num);
+  }
+
+  static void write(file_ops& io, var_int const o) {
+    LOG_TRACE() << "o.num=" << o.num;
+    io.write(o.num);
+  }
+};
+
 template <SerDes T>
-void from_socket(int sock, T& payload) {
+void from_socket(
+#if defined(_WIN32)
+    SOCKET sock,
+#else
+    int sock,
+#endif
+    T& payload) {
   socket_ops ops(sock);
   ops.read(payload);
 }
 
 template <SerDes T>
-void to_socket(int sock, T const& payload) {
+void to_socket(
+#if defined(_WIN32)
+    SOCKET sock,
+#else
+    int sock,
+#endif
+    T const& payload) {
   socket_ops ops(sock);
+  ops.write(payload);
+}
+
+template <SerDes T>
+void from_file(int fd, T& payload) {
+  file_ops ops(fd);
+  ops.read(payload);
+}
+
+template <SerDes T>
+void to_file(int fd, T const& payload) {
+  file_ops ops(fd);
   ops.write(payload);
 }
 

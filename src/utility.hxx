@@ -29,7 +29,11 @@ using remove_cvref_t = typename remove_cvref<T>::type;
 #endif
 
 template <typename T>
-concept bool Iterable = requires(T&& o) {
+concept
+#if defined(_GNUC)
+bool
+#endif
+Iterable = requires(T&& o) {
   begin(std::forward<T>(o));
   end(std::forward<T>(o));
 };

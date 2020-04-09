@@ -2,6 +2,7 @@
 // cppflags = -I/usr/local/include
 // cxxflags = -std=c++2a -O2 -march=native -fconcepts -Wall -Werror -pedantic
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <mutex>
 #include <queue>
 #include <random>
@@ -23,18 +25,39 @@
 #include <unordered_map>
 #include <utility>
 
-#include <arpa/inet.h>
+#if defined(_WIN32)
+# include <windows.h>
+# include <winsock2.h>
+# include <ws2tcpip.h>
+# include <iphlpapi.h>
+# include <io.h>
+# pragma comment(lib, "Ws2_32.lib")
+# if !defined(O_SYNC)
+#   define O_SYNC 0
+# endif
+# define fsync(fd) _commit(fd)
+#else
+# include <arpa/inet.h>
+# include <netinet/in.h>
+# include <sys/socket.h>
+# include <unistd.h>
+#endif
+#if __has_include(<unistd.h>)
+# include <unistd.h>
+#endif
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
-#include <sys/socket.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <boost/preprocessor.hpp>
+#include <boost/stacktrace.hpp>
 #include <openssl/sha.h>
 #include <picosha2/picosha2.h>
+
+#define BITCOIN
+// #define LITECOIN
 
 #include "common/crypto.hxx"
 #include "common/logging.hxx"
@@ -47,17 +70,16 @@
 #include "utility.hxx"
 #include "scrypt.h"
 
-// #define BITCOIN
-#define LITECOIN
-
 #if defined(BITCOIN)
 # define PORT 8333
 #elif defined(LITECOIN)
 # define PORT 9333
 #endif
 
+#if defined(_GNUC)
 static_assert(__cpp_concepts >= 201500, "Compile with -fconcepts");
 static_assert(__cplusplus >= 201500, "C++17 at least required");
+#endif
 
 using namespace std::chrono_literals;
 
@@ -228,8 +250,8 @@ addr_t make_addr6(char const* addr) {
 
   addr_t addr_bytes;
   for (int i = 0, j = 0; i < 8; ++i, j += 2) {
-    addr_bytes[j]   = addr_words[i] >> 8;
-    addr_bytes[j+1] = addr_words[i];
+    addr_bytes[j]   = static_cast<std::uint8_t>(addr_words[i] >> 8);
+    addr_bytes[j+1] = static_cast<std::uint8_t>(addr_words[i]);
   }
   return addr_bytes;
 }
@@ -278,15 +300,15 @@ struct db_t {
   };
 
   db_t(char const* path) {
-    fd_ = ::open(path, O_CREAT | O_SYNC | O_RDWR, 0644);
+    fd_ = ::open(path, O_CREAT | O_SYNC | O_RDWR | O_BINARY, 0644);
     lseek(fd_, 0, SEEK_SET);
     read(fd_, (char*)&block_headers_page, sizeof(block_headers_page));
 
-    INFO() << "block_headers_page.version="
+    LOG_INFO() << "block_headers_page.version="
            << block_headers_page.version;
-    INFO() << "block_headers_page.last_height="
+    LOG_INFO() << "block_headers_page.last_height="
            << block_headers_page.last_height;
-    INFO() << "block_headers_page.sz_block_hdr="
+    LOG_INFO() << "block_headers_page.sz_block_hdr="
            << block_headers_page.sz_block_hdr;
   }
   ~db_t() {
@@ -295,8 +317,13 @@ struct db_t {
   }
 
   void save_block(std::uint32_t height, proto::block_headers const& payload) {
-    lseek(fd_, sizeof(block_headers_page) + block_headers_page.sz_block_hdr * height, SEEK_SET);
-    to_socket(fd_, payload);
+    auto pos = sizeof(block_headers_page) + block_headers_page.sz_block_hdr * height;
+    auto rv = lseek(fd_, pos, SEEK_SET);
+    if (rv < 0) {
+      LOG_ERROR() << "lseek failed: " << errno;
+    }
+
+    to_file(fd_, payload);
 
     if (height > block_headers_page.last_height) {
       block_headers_page.last_height = height;
@@ -305,8 +332,13 @@ struct db_t {
   }
 
   void load_block(std::int32_t height, proto::block_headers& payload) {
-    lseek(fd_, sizeof(block_headers_page) + block_headers_page.sz_block_hdr * height, SEEK_SET);
-    from_socket(fd_, payload);
+    auto pos = sizeof(block_headers_page) + block_headers_page.sz_block_hdr * height;
+    auto rv = lseek(fd_, pos, SEEK_SET);
+    if (rv < 0) {
+      LOG_ERROR() << "lseek failed: " << errno;
+    }
+
+    from_file(fd_, payload);
   }
 
   auto last_height() const {
@@ -319,7 +351,10 @@ struct db_t {
   void sync() {
     lseek(fd_, 0, SEEK_SET);
     write(fd_, (char const*)&block_headers_page, sizeof(block_headers_page));
-    fsync(fd_);
+    auto rv = fsync(fd_);
+    if (rv) {
+      LOG_ERROR() << "_commit failed: rv=" << rv;
+    }
   }
 
  private:
@@ -393,7 +428,12 @@ struct node_t {
 
   std::string addr;
   db_t&       db;
-  int         sock_fd;
+#if defined(_WIN32)
+  SOCKET
+ #else
+  int
+ #endif
+    sock_fd;
   state_t     state;
 
   std::uint64_t feerate;
@@ -421,61 +461,135 @@ struct node_t {
 
   ~node_t() {
     if (sock_fd)
+#if defined(_WIN32)
+      closesocket(sock_fd);
+#else
       close(sock_fd);
+#endif
   }
   
-  static int conn4(char const* addr) {
-    int sock_fd = -1;
+  static
+#if defined(_WIN32)
+  SOCKET
+#else
+  int
+#endif
+  conn(char const* addr) {
+#if defined(_WIN32)
+    decltype(WSAGetLastError()) xerrno;
+#else
+    decltype(errno) xerrno;
+#endif
+    xerrno = 0;
     int ret;
-    sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock_fd == -1) {
-      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
-                              "socket failed");
+    addrinfo* result = nullptr;
+    addrinfo* ptr = nullptr;
+    addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    ret = getaddrinfo(addr, BOOST_PP_STRINGIZE(PORT), &hints, &result);
+    if (ret != 0) {
+#if defined(_WIN32)
+      xerrno = WSAGetLastError();
+#else
+      xerrno = errno;
+#endif
+      throw std::system_error(
+          std::make_error_code(static_cast<std::errc>(xerrno)),
+          "getaddrinfo failed");
     }
-    struct sockaddr_in server_addr;
-    bzero((char*)&server_addr, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    inet_pton(AF_INET, addr, &server_addr.sin_addr);
-    server_addr.sin_port = htons(PORT);
-    ret = connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (ret == -1) {
-      close(sock_fd);
-      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
-                              "connect failed");
-    }
-    return sock_fd;
-  }
 
-  static int conn6(char const* addr) {
+#if defined(_WIN32)
+    SOCKET sock_fd = INVALID_SOCKET;
+#else
     int sock_fd = -1;
-    int ret;
-    sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (sock_fd == -1) {
-      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
-                              "socket failed");
-    }
-    struct sockaddr_in6 server_addr;
-    bzero((char*)&server_addr, sizeof(server_addr));
-    server_addr.sin6_family = AF_INET6;
-    inet_pton(AF_INET6, addr, &server_addr.sin6_addr);
-    server_addr.sin6_port = htons(PORT);
-    ret = connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (ret == -1) {
-      close(sock_fd);
-      throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
-                              "connect failed");
-    }
-    return sock_fd;
-  }
+#endif
 
-  static int conn(char const* addr) {
-    return strchr(addr, ':') ? conn6(addr) : conn4(addr);
+    for (ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
+      sock_fd = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+#if defined(_WIN32)
+      if (sock_fd == INVALID_SOCKET) {
+#else
+      if (sock_fd == -1) {
+#endif
+#if defined(_WIN32)
+        xerrno = WSAGetLastError();
+#else
+        xerrno = errno;
+#endif
+        freeaddrinfo(result);
+        LOG_ERROR() << "socket failed: errno=" << xerrno;
+        continue;
+        // throw std::system_error(
+        //    std::make_error_code(static_cast<std::errc>(xerrno)),
+        //    "socket failed");
+      }
+
+      ret = connect(sock_fd, ptr->ai_addr, static_cast<int>(ptr->ai_addrlen));
+#if defined(_WIN32)
+      if (ret == SOCKET_ERROR) {
+#else
+      if (ret == -1) {
+#endif
+        LOG_ERROR() << "ret=" << ret;
+        LOG_ERROR() << "addr=" << addr;
+        LOG_ERROR() << "ptr->ai_family=" << int(ptr->ai_family);
+        LOG_ERROR() << "ptr->ai_addr=" << unsigned(ptr->ai_addr->sa_data[0]);
+        LOG_ERROR() << "ptr->ai_addr=" << unsigned(ptr->ai_addr->sa_data[1]);
+        LOG_ERROR() << "sock_fd=" << sock_fd;
+        LOG_ERROR() << "INVALID_SOCKET=" << INVALID_SOCKET;
+        LOG_ERROR() << "WSAGetLastError()=" << WSAGetLastError();
+#if defined(_WIN32)
+        closesocket(sock_fd);
+#else
+        close(sock_fd);
+#endif
+#if defined(_WIN32)
+        xerrno = WSAGetLastError();
+#else
+        xerrno = errno;
+#endif
+        LOG_ERROR() << "connect failed: errno=" << xerrno;
+        continue;
+        //freeaddrinfo(result);
+        // throw std::system_error(
+        //    std::make_error_code(static_cast<std::errc>(xerrno)),
+        //    "connect failed");
+      }
+
+      break;
+    }
+
+    freeaddrinfo(result);
+
+#if defined(_WIN32)
+    if (sock_fd == INVALID_SOCKET) {
+#else
+    if (sock_fd == -1) {
+#endif
+      throw std::system_error(
+          std::make_error_code(static_cast<std::errc>(xerrno)),
+          "conn_any failed");
+    }
+
+    {
+      char node[150];
+      char service[20];
+      getnameinfo(ptr->ai_addr, static_cast<int>(ptr->ai_addrlen), node, sizeof(node), service,
+                  sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV);
+      LOG_INFO() << "connected to " << node << ':' << service;
+    }
+
+    return sock_fd;
   }
 
   void run() {
     sock_fd = conn(addr.c_str());
-    auto addr_from = make_addr6("2a02:8084:2161:c800:ccc6:b381:5797:eb");
-    // auto addr_from = make_addr4("37.228.246.55");
+    // auto addr_from = make_addr6("2a02:8084:2161:c800:ccc6:b381:5797:eb");
+    auto addr_from = make_addr4("24.52.248.93");
 
     {
       proto::version payload = {
@@ -498,7 +612,7 @@ struct node_t {
         0
       };
       proto::header hdr = make_header("version", payload);
-      INFO() << " <== version";
+      LOG_INFO() << " <== version";
 
       to_socket(sock_fd, hdr);
       to_socket(sock_fd, payload);
@@ -546,7 +660,7 @@ struct node_t {
         // state = STATE_MINING;
         // break;
 
-        INFO() << " <== mempool";
+        LOG_INFO() << " <== mempool";
         to_socket(sock_fd, make_header("mempool"));
 
         state = STATE_MEMPOOL_REQUESTING;
@@ -564,7 +678,7 @@ struct node_t {
               fee_transactions.insert(t.previous_output.hash);
             }
           }
-          INFO() << addr << " <== getdata (" << fee_transactions.size() << " fee txs)";
+          LOG_INFO() << addr << " <== getdata (" << fee_transactions.size() << " fee txs)";
           to_socket(sock_fd, make_header("getdata", getdata));
           to_socket(sock_fd, getdata);
 
@@ -579,7 +693,7 @@ struct node_t {
         break;
 
       case STATE_MINING: {
-        INFO() << " Let's mine having " << transactions.size() << " mempool transactions";
+        LOG_INFO() << " Let's mine having " << transactions.size() << " mempool transactions";
 
         auto const last_height = db.last_height();
         std::vector<std::pair<hash_t, std::size_t>> mining_txs;
@@ -610,11 +724,11 @@ struct node_t {
                       };
         std::sort(mining_txs.begin(), mining_txs.end(), by_fee);
         std::uint64_t total_fee = std::accumulate(
-            mining_txs.cbegin(), mining_txs.cend(), 0,
+            mining_txs.cbegin(), mining_txs.cend(), std::uint64_t{0},
             [](auto state, auto const& x) {
               return state + x.second;
             });
-        INFO() << "We go for fee of " << total_fee << " satoshis from " << mining_txs.size() << " txs";
+        LOG_INFO() << "We go for fee of " << total_fee << " satoshis from " << mining_txs.size() << " txs";
 
         proto::block_headers last_block;
         db.load_block(last_height, last_block);
@@ -649,19 +763,19 @@ struct node_t {
 
           auto digest_state = btc::crypto::sha256_first_block(buf.data(), buf.size());
 
-          INFO() << "target: " << prettify_hash(target_to_s(block.bits));
-          INFO() << "mining with block:\n" << block;
+          LOG_INFO() << "target: " << prettify_hash(target_to_s(block.bits));
+          LOG_INFO() << "mining with block:\n" << block;
 
           // std::this_thread::sleep_for(30ms);
           auto [min_hash, min_nonce] = hasher_prog(target_hash, buf,
                                                    digest_state.W, digest_state.hash,
                                                    nonce_begin, nonce_end);
 
-          INFO() << "\tmin_hash:  " << prettify_hash(to_string(min_hash));
-          INFO() << "\tmin_nonce: " << min_nonce;
+          LOG_INFO() << "\tmin_hash:  " << prettify_hash(to_string(min_hash));
+          LOG_INFO() << "\tmin_nonce: " << min_nonce;
 
           if (compare_hashes(min_hash, target_to_hash32(block.bits)) <= 0) {
-            INFO() << "===>>> found! <<<===";
+            LOG_INFO() << "===>>> found! <<<===";
             exit(0);
           }
           // std::uint32_t& nonce = *reinterpret_cast<std::uint32_t*>(&buf.back() + 1 - sizeof(std::uint32_t));
@@ -708,7 +822,7 @@ struct node_t {
           //   if (nonce == nonce_end)
           //     break;
           // }
-          INFO() << "miner done";
+          LOG_INFO() << "miner done";
         };
 
         std::thread miner_thr([mine, mining_txs, by_fee]() mutable {
@@ -719,7 +833,7 @@ struct node_t {
                  std::numeric_limits<std::uint32_t>::min(),
                  std::numeric_limits<std::uint32_t>::max());
           } while (std::next_permutation(mining_txs.begin(), mining_txs.end(), by_fee));
-          INFO() << "all permutations have been attempted";
+          LOG_INFO() << "all permutations have been attempted";
         });
 
         miner_thr.detach();
@@ -735,7 +849,7 @@ struct node_t {
           proto::getdata pld = {
             {{proto::inv_vect::MSG_BLOCK, hdrs.prev_block}}
           };
-          INFO() << " <== getdata (" << to_string(hdrs.prev_block) << ')';
+          LOG_INFO() << " <== getdata (" << to_string(hdrs.prev_block) << ')';
           to_socket(sock_fd, make_header("getdata", pld));
           to_socket(sock_fd, pld);
 
@@ -751,13 +865,13 @@ struct node_t {
 
   void send_sendcmpct() {
     proto::sendcmpct payload{0, 1};
-    INFO() << addr << " <== sendcmpct";
+    LOG_INFO() << addr << " <== sendcmpct";
     to_socket(sock_fd, make_header("sendcmpct", payload));
     to_socket(sock_fd, payload);
   }
 
   void send_getaddr() {
-    INFO() << addr << " <== getaddr";
+    LOG_INFO() << addr << " <== getaddr";
     to_socket(sock_fd, make_header("getaddr"));
   }
 
@@ -775,7 +889,7 @@ struct node_t {
     proto::getheaders payload = {
       current_version, hashes, {}
     };
-    INFO() << addr << " <== getheaders";
+    LOG_INFO() << addr << " <== getheaders";
     to_socket(sock_fd, make_header("getheaders", payload));
     to_socket(sock_fd, payload);
   };
@@ -785,10 +899,10 @@ struct node_t {
     from_socket(sock_fd, payload);
     node_version = payload.version;
     current_version = std::min(current_version, node_version);
-    INFO() << addr << ": [version] node user agent=" << payload.user_agent;
-    INFO() << addr << ": [version] node start height=" << payload.start_height;
-    INFO() << addr << ": [version] node version=" << node_version;
-    INFO() << addr << ": [version] current version=" << current_version;
+    LOG_INFO() << addr << ": [version] node user agent=" << payload.user_agent;
+    LOG_INFO() << addr << ": [version] node start height=" << payload.start_height;
+    LOG_INFO() << addr << ": [version] node version=" << node_version;
+    LOG_INFO() << addr << ": [version] current version=" << current_version;
 
     to_socket(sock_fd, make_header("verack"));
 
@@ -800,13 +914,13 @@ struct node_t {
   void handle_sendcmpct(proto::header const&) {
     proto::sendcmpct payload;
     from_socket(sock_fd, payload);
-    INFO() << addr << ": [sendcmpct] enabled=" << int{payload.cmpct_enabled};
-    INFO() << addr << ": [sendcmpct] version=" << payload.version;
+    LOG_INFO() << addr << ": [sendcmpct] enabled=" << int{payload.cmpct_enabled};
+    LOG_INFO() << addr << ": [sendcmpct] version=" << payload.version;
   }
 
   void handle_sendheaders(proto::header const&) {
     proto::headers payload;
-    INFO() << addr << " <== headers";
+    LOG_INFO() << addr << " <== headers";
     to_socket(sock_fd, make_header("headers", payload));
     to_socket(sock_fd, payload);
   }
@@ -817,19 +931,18 @@ struct node_t {
 
     if (!payload.headers.empty()) {
       auto&& e = payload.headers.back();
-      INFO() << "\tBlocks (" << payload.headers.size() << "):";
-      INFO() << "\t\t"
-             << e.version << ' '
-             << "prev=" << to_string(e.prev_block) << ' '
-             << "root=" << to_string(e.merkle_root) << ' '
-             << e.timestamp << ' '
-             << std::hex << e.bits << std::dec << ' '
-             << e.nonce << ' '
-             << e.txn_count;
-      INFO() << "\t\t"
-             << prettify_hash(target_to_s(e.bits));
-      INFO() << "\t\t"
-             << "hash=" << prettify_hash(to_string(e.hash()));
+      LOG_INFO() << "Blocks (" << payload.headers.size() << "):";
+      LOG_INFO() << "\t\tversion=" << e.version;
+      LOG_INFO() << "\t\tprev=      " << to_string(e.prev_block);
+      LOG_INFO() << "\t\tmerkle=    " << to_string(e.merkle_root);
+      LOG_INFO() << "\t\ttm=" << e.timestamp << ' '
+                 << "bits=" << std::hex << e.bits << std::dec << ' '
+                 << "nonce=" << e.nonce << ' '
+                 << "txn_count=" << e.txn_count;
+      LOG_INFO() << "\t\t"
+                 << "complexity=" << prettify_hash(target_to_s(e.bits));
+      LOG_INFO() << "\t\t"
+                 << "hash=      " << prettify_hash(to_string(e.hash()));
     }
 
     auto height = db.last_height();
@@ -838,7 +951,7 @@ struct node_t {
       db.save_block(height, e);
     }
 
-    INFO() << "\tLast height: " << db.last_height();
+    LOG_INFO() << "Last height in DB: " << db.last_height();
 
     if (!payload.headers.empty()) {
       send_block_headers(db.last_height());
@@ -850,13 +963,13 @@ struct node_t {
     proto::feefilter payload;
     from_socket(sock_fd, payload);
     feerate = payload.feerate;
-    INFO() << addr << ": [feefilter] feerate=" << feerate << " satoshis/KiB";
+    LOG_INFO() << addr << ": [feefilter] feerate=" << feerate << " satoshis/KiB";
   }
 
   void handle_ping(proto::header const&) {
     proto::ping ping;
     from_socket(sock_fd, ping);
-    INFO() << addr << ": [ping] nonce=" << ping.nonce;
+    LOG_INFO() << addr << ": [ping] nonce=" << ping.nonce;
 
     proto::pong pong{ping.nonce};
     to_socket(sock_fd, make_header("pong", pong));
@@ -869,49 +982,49 @@ struct node_t {
   void handle_pong(proto::header const&) {
     proto::pong pong;
     from_socket(sock_fd, pong);
-    INFO() << addr << ": [pong] nonce=" << pong.nonce;
+    LOG_INFO() << addr << ": [pong] nonce=" << pong.nonce;
   }
 
   void handle_addr(proto::header const&) {
     proto::addr payload;
     from_socket(sock_fd, payload);
-    INFO() << addr << ": [addr] " << payload.addrs.size() << " peers";
+    LOG_INFO() << addr << ": [addr] " << payload.addrs.size() << " peers";
     if (!payload.addrs.empty()) {
       auto&& e = payload.addrs.back();
-      INFO() << "\t\t" << addr_to_s(e.addr) << ':' << e.port;
+      LOG_INFO() << "\t\t" << addr_to_s(e.addr) << ':' << e.port;
     }
   }
 
   void handle_block(proto::header const&) {
     proto::block payload;
     from_socket(sock_fd, payload);
-    INFO() << addr << ": [block] " << payload.txs.size() << " txs";
+    LOG_INFO() << addr << ": [block] " << payload.txs.size() << " txs";
     unsigned limit = 45;
     for (auto&& e : payload.txs) {
       if (e.tx_witnesses.empty())
         continue;
-      INFO() << "\ttx:     " << to_string(compute_hash(e));
+      LOG_INFO() << "\ttx:     " << to_string(compute_hash(e));
       for (auto& t: e.txs_in)
-        INFO() << "\ttx_in:  " << btc::proto::script{{t.signature_script}};
+        LOG_INFO() << "\ttx_in:  " << btc::proto::script{{t.signature_script}};
       for (auto& t: e.txs_out) {
-        INFO() << "\ttx_out: " << std::setfill(' ') << std::setw(16) << std::right << t.value << " satoshis";
-        INFO() << "\ttx_out: " << btc::proto::script{{t.pk_script}};
+        LOG_INFO() << "\ttx_out: " << std::setfill(' ') << std::setw(16) << std::right << t.value << " satoshis";
+        LOG_INFO() << "\ttx_out: " << btc::proto::script{{t.pk_script}};
       }
       for (auto& t: e.tx_witnesses)
-        INFO() << "\ttx_wt:  " << btc::proto::script{{t.data}};
+        LOG_INFO() << "\ttx_wt:  " << btc::proto::script{{t.data}};
       if (!--limit)
         break;
     }
-    INFO() << "\t\tmerkle tree: " << prettify_hash(to_string(merkle_tree(payload.txs)));
+    LOG_INFO() << "\t\tmerkle tree: " << prettify_hash(to_string(merkle_tree(payload.txs)));
   }
 
   void handle_inv(proto::header const&) {
     proto::inv payload;
     from_socket(sock_fd, payload);
-    INFO() << addr << ": [inv] " << payload.inventory.size() << " items";
+    LOG_INFO() << addr << ": [inv] " << payload.inventory.size() << " items";
     unsigned limit = 3;
     for (auto&& e : payload.inventory) {
-      INFO() << addr << ": [inv] \t" << e.type << ' ' << to_string(e.hash);
+      LOG_INFO() << addr << ": [inv] \t" << e.type << ' ' << to_string(e.hash);
       if (!--limit)
         break;
     }
@@ -926,7 +1039,7 @@ struct node_t {
           getdata.inventory.push_back(proto::inv_vect{i.type, i.hash});
           mempool_transactions.insert(i.hash);
         }
-        INFO() << addr << " <== getdata (" << mempool_transactions.size() << " mempool txs)";
+        LOG_INFO() << addr << " <== getdata (" << mempool_transactions.size() << " mempool txs)";
         to_socket(sock_fd, make_header("getdata", getdata));
         to_socket(sock_fd, getdata);
 
@@ -957,7 +1070,7 @@ struct node_t {
 
     switch (state) {
     case STATE_MEMPOOL_TX_REQUESTING:
-      WARN() << payload.inventory.size() << " mempool txs are not found";
+      LOG_WARN() << payload.inventory.size() << " mempool txs are not found";
       for (auto&& i : payload.inventory) {
         if (i.type != proto::inv_vect::MSG_TX)
           continue;
@@ -970,7 +1083,7 @@ struct node_t {
       break;
 
     case STATE_MEMPOOL_FEE_REQUESTING:
-      WARN() << payload.inventory.size() << " fee txs are not found";
+      LOG_WARN() << payload.inventory.size() << " fee txs are not found";
       for (auto&& i : payload.inventory) {
         if (i.type != proto::inv_vect::MSG_TX)
           continue;
@@ -1021,7 +1134,11 @@ struct node_t {
     std::size_t len = hdr.length;
     while (len > 0) {
       std::size_t to_read = std::min(sizeof(buf), len);
+#if defined(_WIN32)
+      int rv = recv(sock_fd, buf, static_cast<int>(to_read), 0);
+#else
       int rv = read(sock_fd, buf, to_read);
+#endif
       if (rv <= 0)
         throw std::system_error(std::make_error_code(static_cast<std::errc>(errno)),
                                 "read failed");
@@ -1051,11 +1168,11 @@ int main(int argc, char* argv[]) {
   // INFO() << "sse2detect=" << sse2detect;
 #endif
 
-  char const* peer_addr = nullptr;
+  char const* peer_addr = "dnsseed.bluematt.me";
   unsigned platform_id = 0;
   unsigned device_id = 0;
   bool test_mining = false;
-  std::uint32_t test_height;
+  std::uint32_t test_height = 0;
 
   int argc_i;
   for (argc_i = 1; argc_i < argc; ++argc_i) {
@@ -1074,47 +1191,80 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  if (test_mining) {
-    std::uint32_t const height = test_height;
-    proto::block_headers block;
+  try {
+    if (test_mining) {
+      std::uint32_t const height = test_height;
+      proto::block_headers block;
 #if defined(BITCOIN)
-    db_t db("bitcoin_block_headers.db");
+      db_t db("bitcoin_block_headers.db");
 #elif defined(LITECOIN)
-    db_t db("litecoin_block_headers.db");
+      db_t db("litecoin_block_headers.db");
 #endif
-    db.load_block(height, block);
-    auto buf = block_hash_buf(block);
+      db.load_block(height, block);
+      auto buf = block_hash_buf(block);
 
-    auto digest_state = btc::crypto::sha256_first_block(buf.data(), buf.size());
+      auto digest_state = btc::crypto::sha256_first_block(
+          buf.data(), static_cast<std::uint32_t>(buf.size()));
 
-    auto target_hash = target_to_hash32(block.bits);
-    INFO() << "target: " << prettify_hash(to_string(target_hash));
-    INFO() << "hash: "   << prettify_hash(to_string(block.hash()));
-    INFO() << "mining with block:\n" << block;
+      auto target_hash = target_to_hash32(block.bits);
+      LOG_INFO() << "target: " << prettify_hash(to_string(target_hash));
+      LOG_INFO() << "hash: " << prettify_hash(to_string(block.hash()));
+      LOG_INFO() << "mining with block:\n" << block;
 
-    opencl::context ctx;
-    ctx.init(platform_id, device_id);
+      opencl::context ctx;
+      ctx.init(platform_id, device_id);
 
-    sha256_program hasher_prog(ctx);
-    // auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, 0, 1);
-    auto [min_hash, min_nonce] = hasher_prog(target_hash, buf,
-                                             digest_state.W, digest_state.hash,
-                                             // block.nonce-1, block.nonce+1);
-                                             0x00000000, 0xffffffff);
+      sha256_program hasher_prog(ctx);
+      // auto [min_hash, min_nonce] = hasher_prog(target_hash, buf, 0, 1);
+      auto [min_hash, min_nonce] =
+          hasher_prog(target_hash, buf, digest_state.W, digest_state.hash,
+                      // block.nonce-1, block.nonce+1);
+                      0x00000000, 0xffffffff);
 
-    INFO() << "min_hash <=> target_hash: " << compare_hashes(min_hash, target_hash);
-    INFO() << "min_hash: " << to_string(min_hash);
-    INFO() << "min_nonce: " << min_nonce;
-    ctx.cleanup();
-    return 0;
-  }
+      LOG_INFO() << "min_hash <=> target_hash: "
+                 << compare_hashes(min_hash, target_hash);
+      LOG_INFO() << "min_hash: " << to_string(min_hash);
+      LOG_INFO() << "min_nonce: " << min_nonce;
+      ctx.cleanup();
+      return 0;
+    }
+  } catch (std::system_error const& err) {
+    LOG_ERROR() << "Error occurred (" << err.code() << "): " << err.what();
 
-  if (!peer_addr) {
-    usage(argv[0]);
+    return 1;
+  } catch (std::exception const& ex) {
+    LOG_ERROR() << "Error occurred: " << ex.what();
+
     return 1;
   }
 
-  // try {
+#if defined(_WIN32)
+  struct RAII_WSAInit {
+    RAII_WSAInit() {
+      // Initialize Winsock
+      int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+      if (iResult != NO_ERROR) {
+        wprintf(L"WSAStartup function failed with error: %d\n", iResult);
+      }
+    }
+    ~RAII_WSAInit() {
+      WSACleanup();
+    }
+
+  private:
+    WSADATA wsaData;
+  } raii_wsainit;
+#endif
+
+#if 0
+# define TRY if (1)
+# define CATCH(...) if (0)
+#else
+# define TRY try
+# define CATCH catch
+#endif
+
+  TRY {
 #if defined(BITCOIN)
     db_t db("bitcoin_block_headers.db");
 #elif defined(LITECOIN)
@@ -1129,10 +1279,11 @@ int main(int argc, char* argv[]) {
 
     g_ctx->cleanup();
 
-  // } catch (std::system_error const& err) {
-  //   ERROR() << "Error occurred (" << err.code() << "): " << err.what();
-  //   return 1;
-  // }
+  } CATCH (std::system_error const& err) {
+    LOG_ERROR() << "Error occurred (" << err.code() << "): " << err.what();
+
+    return 1;
+  }
 
   return 0;
 }

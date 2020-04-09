@@ -26,7 +26,11 @@
           BOOST_PP_VARIADIC_TO_LIST(__VA_ARGS__)))                      \
 
 template <typename T>
-concept bool SerDes = requires(T&& o) {
+concept
+#if defined(_GNUC)
+bool
+#endif
+SerDes = requires(T&& o) {
   o.names();
   o.tuple();
 };
