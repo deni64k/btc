@@ -2,6 +2,9 @@
 
 #include <chrono>
 
+// Integrate with CUDA
+// https://devblogs.nvidia.com/even-easier-introduction-cuda/
+
 #include "common/types.hxx"
 #include "common/profile.hxx"
 #include "opencl/opencl.hxx"

@@ -1,9 +1,6 @@
 cmake_minimum_required (VERSION 3.16)
 project (btc LANGUAGES CXX)
 
-# Integrate with CUDA
-# https://devblogs.nvidia.com/even-easier-introduction-cuda/
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
@@ -24,6 +21,7 @@ include(CheckLanguage)
 check_language(CUDA)
 if (CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
+  add_compile_definitions(HAVE_CUDA)
 else ()
   message(STATUS "No CUDA support")
 endif ()
