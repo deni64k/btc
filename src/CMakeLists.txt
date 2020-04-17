@@ -3,15 +3,9 @@ add_executable(btc
         scrypt.cxx
         scrypt-sse2.cxx)
 
-target_link_libraries(btc ${OPENSSL_LIBRARIES})
-target_link_libraries(btc ${OpenCL_LIBRARIES})
-
-set_target_properties(btc PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS ON
-    # COMPILE_OPTIONS "-fconcepts"
- )
+target_link_libraries(btc Boost::headers)
+target_link_libraries(btc OpenSSL::Crypto)
+target_link_libraries(btc OpenCL::OpenCL)
 
 add_custom_target(copy_shaders_directory ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory 

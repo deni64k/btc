@@ -10,7 +10,7 @@ struct sha256_program {
   //static constexpr std::size_t const max_batch_size = 256 * 1024;
   //static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
   //static constexpr std::size_t const opencl_local_size = 64;
-  static constexpr std::size_t const max_batch_size = 32 * 1024;
+  static constexpr std::size_t const max_batch_size = 64 * 1024;
   static constexpr std::size_t const nonce_step = 4 * 1024 + 512;
   static constexpr std::size_t const opencl_local_size = 32;
 

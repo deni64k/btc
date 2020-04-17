@@ -26,6 +26,7 @@
 #include <utility>
 
 #if defined(_WIN32)
+// https://docs.huihoo.com/doxygen/postgresql/include_2port_2win32_8h_source.html
 # include <windows.h>
 # include <winsock2.h>
 # include <ws2tcpip.h>
@@ -933,16 +934,13 @@ struct node_t {
       auto&& e = payload.headers.back();
       LOG_INFO() << "Blocks (" << payload.headers.size() << "):";
       LOG_INFO() << "\t\tversion=" << e.version;
-      LOG_INFO() << "\t\tprev=      " << to_string(e.prev_block);
-      LOG_INFO() << "\t\tmerkle=    " << to_string(e.merkle_root);
-      LOG_INFO() << "\t\ttm=" << e.timestamp << ' '
-                 << "bits=" << std::hex << e.bits << std::dec << ' '
-                 << "nonce=" << e.nonce << ' '
+      LOG_INFO() << "\t\tmerkle=    " << prettify_hash(to_string(e.merkle_root));
+      LOG_INFO() << "\t\tprev=      " << prettify_hash(to_string(e.prev_block));
+      LOG_INFO() << "\t\tcomplexity=" << prettify_hash(target_to_s(e.bits));
+      LOG_INFO() << "\t\thash=      " << prettify_hash(to_string(e.hash()));
+      LOG_INFO() << "\t\ttm=" << e.timestamp << ' ' << "bits=" << std::hex
+                 << e.bits << std::dec << ' ' << "nonce=" << e.nonce << ' '
                  << "txn_count=" << e.txn_count;
-      LOG_INFO() << "\t\t"
-                 << "complexity=" << prettify_hash(target_to_s(e.bits));
-      LOG_INFO() << "\t\t"
-                 << "hash=      " << prettify_hash(to_string(e.hash()));
     }
 
     auto height = db.last_height();
@@ -1207,8 +1205,8 @@ int main(int argc, char* argv[]) {
           buf.data(), static_cast<std::uint32_t>(buf.size()));
 
       auto target_hash = target_to_hash32(block.bits);
-      LOG_INFO() << "target: " << prettify_hash(to_string(target_hash));
-      LOG_INFO() << "hash: " << prettify_hash(to_string(block.hash()));
+      LOG_INFO() << "target= " << prettify_hash(to_string(target_hash));
+      LOG_INFO() << "hash=   " << prettify_hash(to_string(block.hash()));
       LOG_INFO() << "mining with block:\n" << block;
 
       opencl::context ctx;
@@ -1223,8 +1221,8 @@ int main(int argc, char* argv[]) {
 
       LOG_INFO() << "min_hash <=> target_hash: "
                  << compare_hashes(min_hash, target_hash);
-      LOG_INFO() << "min_hash: " << to_string(min_hash);
-      LOG_INFO() << "min_nonce: " << min_nonce;
+      LOG_INFO() << "min_hash=  " << prettify_hash(to_string(min_hash));
+      LOG_INFO() << "min_nonce= " << min_nonce;
       ctx.cleanup();
       return 0;
     }
